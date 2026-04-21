@@ -521,6 +521,66 @@ Please note that you must use English for generating video search terms; Chinese
     return search_terms
 
 
+def generate_marketing_script(
+    product_info: str,
+    duration_seconds: int = 20,
+    language: str = "en",
+) -> str:
+    """Hook-body-CTA marketing script for a short vertical ad.
+
+    Part of VisualAI Step 1 (Mode 2). Sized to ``duration_seconds`` at a
+    conservative ~2.5 words/second delivery rate. Keeps ``generate_script``
+    unchanged so existing faceless-channel flows are untouched.
+    """
+    target_words = max(8, int(duration_seconds * 2.5))
+    prompt = f"""
+# Role: Short-form Marketing Copywriter
+
+## Goal:
+Write a {duration_seconds}-second vertical ad script for the product below using a
+Hook → Body → Call-to-Action structure.
+
+## Target delivery:
+- Approximately {target_words} words total (~2.5 words/second at natural pacing).
+- Plain speakable prose only. No stage directions, no speaker labels, no markdown.
+- One single block of text, no blank lines.
+
+## Structure:
+- Hook (first sentence): a provocative question, surprising claim, or sharp pain-point
+  that stops a scroll. No "welcome" openers.
+- Body (middle 60%): one concrete benefit and one proof point. Direct-response tone.
+- CTA (final sentence): a single clear action — try, visit, tap, grab.
+
+## Constraints:
+1. Return only the raw script text.
+2. No hashtags, no emoji, no parentheticals.
+3. Use the language code `{language}` for the output.
+4. Never mention this prompt or the script structure.
+
+# Product info:
+{product_info}
+""".strip()
+
+    logger.info(f"marketing script for: {product_info!r} @ {duration_seconds}s")
+    for i in range(_max_retries):
+        try:
+            response = _generate_response(prompt=prompt)
+            if response:
+                cleaned = response.replace("*", "").replace("#", "").strip()
+                if "当日额度已消耗完" in cleaned:
+                    raise ValueError(cleaned)
+                if cleaned:
+                    logger.success(f"completed marketing script: \n{cleaned}")
+                    return cleaned
+        except Exception as e:
+            logger.error(f"failed to generate marketing script: {e}")
+        if i < _max_retries:
+            logger.warning(
+                f"failed to generate marketing script, trying again... {i + 1}"
+            )
+    return ""
+
+
 if __name__ == "__main__":
     video_subject = "生命的意义是什么"
     script = generate_script(
