@@ -384,8 +384,26 @@ def _generate_response(prompt: str) -> str:
 
 
 def generate_script(
-    video_subject: str, language: str = "", paragraph_number: int = 1
+    video_subject: str,
+    language: str = "",
+    paragraph_number: int = 1,
+    mode: str = "faceless",
 ) -> str:
+    # Dispatch to the mode-specific script generator when the caller supplies
+    # an Agent Mode that has its own copy style. "faceless" keeps the legacy
+    # narrative-narration behavior so Mode 5 paths + all existing call sites
+    # stay backwards-compatible. Step 1 debt: the dispatch lives inline here
+    # instead of in the app/services/modes/ registry (Principle V relaxation
+    # tracked as debt #4 in STEP1_DEBT.md; repaid in Step 3).
+    if mode == "short":
+        # Pick a reasonable target length when the caller didn't propagate one.
+        # ~2.5 words/second × 20s ≈ 50 words — appropriate for a short ad.
+        return generate_marketing_script(
+            product_info=video_subject,
+            duration_seconds=20,
+            language=language or "en",
+        )
+
     prompt = f"""
 # Role: Video Script Generator
 
@@ -457,8 +475,57 @@ Generate a script for a video, depending on the subject of the video.
     return final_script.strip()
 
 
-def generate_terms(video_subject: str, video_script: str, amount: int = 5) -> List[str]:
-    prompt = f"""
+def generate_terms(
+    video_subject: str,
+    video_script: str,
+    amount: int = 5,
+    mode: str = "faceless",
+) -> List[str]:
+    # Mode 2 (short marketing ads) needs concrete, product-centric scene
+    # terms — not abstract person/theme terms that return random unrelated
+    # stock. In "short" mode we hand the LLM a stricter prompt with
+    # exclusion rules; "faceless" keeps the upstream prompt unchanged so
+    # Mode 5 and legacy callers see identical behavior.
+    if mode == "short":
+        prompt = f"""
+# Role: Product-Video Search Terms Generator
+
+## Goal:
+Generate {amount} concrete, product-centric search terms for stock videos
+that will be used as B-roll behind a short marketing ad.
+
+## Output format:
+A JSON array of {amount} strings. No explanation, no code fences, just the array.
+
+## Rules:
+1. Every term MUST describe a concrete PRODUCT OR SCENE — e.g.
+   "wireless headphones close up", "coffee brewing in glass", "ceramic mug on table".
+2. NEVER return abstract traits or person descriptors. Forbidden examples:
+   "beautiful lady", "stunning view", "seductive display", "luxury lifestyle",
+   "elegant atmosphere", "professional look", "cinematic shot".
+3. Anchor AT LEAST 3 of the {amount} terms to the main product or object being
+   advertised. Re-use the product noun across multiple terms with different
+   angles/contexts (close-up, in-use, detail, on-surface, in-hand).
+4. Prefer concrete nouns over adjectives. 2–4 words per term.
+5. English only.
+
+## Good examples for "a ceramic pour-over coffee dripper":
+["ceramic coffee dripper", "pour over brewing", "coffee dripping close up",
+ "hands pouring kettle", "morning coffee ritual"]
+
+## Bad examples — DO NOT produce:
+["beautiful morning", "luxury kitchen", "elegant lifestyle", "stunning aroma",
+ "cozy atmosphere"]
+
+## Context:
+### Video Subject
+{video_subject}
+
+### Video Script
+{video_script}
+""".strip()
+    else:
+        prompt = f"""
 # Role: Video Search Terms Generator
 
 ## Goals:

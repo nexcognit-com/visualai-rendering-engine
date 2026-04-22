@@ -4,22 +4,27 @@
 **Owner**: Layer 3 rendering engine (this repo)
 **Authority**: [.specify/memory/constitution.md](.specify/memory/constitution.md) v1.0.2 + the 5-step build plan
 
-Step 1 of the VisualAI 5-step build plan ships **Mode 2 (Short Marketing Video)** end-to-end on the existing MoneyPrinterTurbo engine before the full 5-layer architecture is in place. Doing this cleanly tonight requires consciously relaxing four constitution principles. Each relaxation is scheduled for repayment in a specific later step; this file is the single source of truth for what's owed and to whom.
+Step 1 of the VisualAI 5-step build plan ships **Mode 2 (Short Marketing Video)** end-to-end on the existing MoneyPrinterTurbo engine before the full 5-layer architecture is in place. Doing this cleanly tonight requires consciously relaxing five constitution principles. Each relaxation is scheduled for repayment in a specific later step; this file is the single source of truth for what's owed and to whom.
 
 | # | Principle | Step-1 relaxation | Repays in | Burn-down commit touches |
 |---|---|---|---|---|
 | 1 | **I. Layer 3 Scope — Rendering Only (NON-NEGOTIABLE)** | The Next.js frontend (`../visualai-frontend/`) calls this Layer 3 API directly at `http://localhost:8080/api/v1/videos` because Layer 2 (Orchestration API) does not exist yet. | **Step 2** | Stand up `../visualai-orchestration/` FastAPI service; frontend routes all calls through it; Layer 3 accepts only requests proxied via Layer 2 |
 | 2 | **III. Multi-Tenant Context Propagation** | Step-1 requests omit `tenant_id`, `user_id`, `product_id`, and `generation_id`. No JWT middleware runs on the video controllers. Mode 2 renders succeed without any tenant context. | **Step 2** | Extend `VideoParams` with required tenant fields; add JWT middleware to `app/controllers/v1/video.py`; flip a feature flag `REQUIRE_TENANT_CONTEXT=true` |
 | 3 | **IV. External Asset Acceptance Over Direct API Calls** | Mode 2 B-roll is fetched directly from Pexels via the existing `app/services/material.py`. The constitution permits Pexels only inside Mode 5 (Faceless Channel Automation); here we stretch it to Mode 2 to avoid a `material.py` rewrite tonight. | **Step 3** | Rewrite `app/services/material.py` to accept pre-signed URLs from Layer 2; gate retained Pexels integration behind `mode == "faceless"` only |
-| 4 | **V. Mode-Aware Rendering Contract** | Mode 2 prompt templates live as an inline function (`generate_marketing_script`) in `app/services/llm.py`. There is no `app/services/modes/` registry yet. The `VideoParams.mode` field accepts only `"faceless"` (default) and `"short"`. | **Step 3** | Build `app/services/modes/` registry; migrate `generate_marketing_script` into `app/services/modes/short.py`; add `app/services/modes/product_shoot.py` (Mode 1), `app/services/modes/faceless.py` (Mode 5); widen the enum only as each mode lands |
+| 4 | **V. Mode-Aware Rendering Contract** | Mode 2 prompt templates + search-term rules live inline inside `app/services/llm.py` (`generate_marketing_script` + the `mode == "short"` branches in `generate_script` and `generate_terms`). There is no `app/services/modes/` registry yet. `VideoParams.mode` accepts only `"faceless"` and `"short"`. | **Step 3** | Build `app/services/modes/` registry; migrate mode-specific prompts into `app/services/modes/short.py`, `app/services/modes/faceless.py`, etc.; widen the enum only as each mode lands |
+| 5 | **II. Surgical Fork Discipline** (Tier 1 Mode 2 quality fix) | `app/services/task.py` is edited with two one-line changes (pass `mode=params.mode` to `llm.generate_script` and `llm.generate_terms`). `task.py` is NOT one of the five permitted fork-surface files, which Principle II requires. The alternative — duplicating the mode-dispatch logic inside a fork-surface file or patching at module import time — is strictly uglier. | **Step 3** | When the mode registry lands in `app/services/modes/`, `task.py` becomes the single call site for the registry dispatcher (`modes.pick(params.mode).generate_script(...)`) — same one-line touch, but now the dispatcher lives in the modes registry which is a legitimate VisualAI-only addition. The task.py edit stays, but the justification moves from "Step 1 debt" to "integration with VisualAI mode registry" and the debt row drops. |
 
-## Principle II (Surgical Fork Discipline) is NOT relaxed
+## Principle II (Surgical Fork Discipline) scope boundary
 
-Step 1 only touches two files inside the five permitted fork-surface set:
-- [`app/services/llm.py`](app/services/llm.py) — new `generate_marketing_script()` function appended; existing `generate_script()` untouched.
-- [`app/models/schema.py`](app/models/schema.py) — new optional `mode: Literal["faceless", "short"]` field on `VideoParams`, defaulted so upstream behavior is preserved.
+Step 1 touches these files inside the five permitted fork-surface set:
+- [`app/services/llm.py`](app/services/llm.py) — new `generate_marketing_script()` function; `generate_script` + `generate_terms` gained optional `mode` kwarg that branches to short-ad prompts when `mode == "short"`.
+- [`app/services/material.py`](app/services/material.py) — defensive enum-value unwrap in `download_videos` concat-mode comparison.
+- [`app/models/schema.py`](app/models/schema.py) — new optional `mode: Literal["faceless", "short"]` field on `VideoParams`; enum defaults for `video_aspect` and `video_concat_mode` changed from `.value` strings to enum instances.
 
-No other MPT source file in this repo is modified during Step 1. `ops/neon/migrations/` files added by feature 003 are Layer 4 DDL artifacts and fall under the §Technology Constraints Database exception.
+Step 1 touches ONE file outside the fork-surface set (tracked as debt row #5 above):
+- [`app/services/task.py`](app/services/task.py) — two one-line edits passing `mode=params.mode` to `llm.generate_script` and `llm.generate_terms`.
+
+`ops/neon/migrations/` files added by feature 003 are Layer 4 DDL artifacts and fall under the constitution §Technology Constraints Database exception, not the Principle II surfaces.
 
 ## How the debt is tracked
 

@@ -17,10 +17,16 @@ def generate_script(task_id, params):
     logger.info("\n\n## generating video script")
     video_script = params.video_script.strip()
     if not video_script:
+        # Plumb Agent Mode through so Mode 2 ("short") routes to the
+        # marketing-ad copywriter inside llm.generate_script. Tracked as
+        # Step 1 debt #5 — task.py is not a fork-surface file per
+        # constitution Principle II; repaid when Step 3 lands the
+        # app/services/modes/ registry.
         video_script = llm.generate_script(
             video_subject=params.video_subject,
             language=params.video_language,
             paragraph_number=params.paragraph_number,
+            mode=getattr(params, "mode", "faceless"),
         )
     else:
         logger.debug(f"video script: \n{video_script}")
@@ -37,8 +43,13 @@ def generate_terms(task_id, params, video_script):
     logger.info("\n\n## generating video terms")
     video_terms = params.video_terms
     if not video_terms:
+        # Pass Agent Mode so Mode 2 uses the product-centric terms prompt
+        # (tracked under Step 1 debt #5).
         video_terms = llm.generate_terms(
-            video_subject=params.video_subject, video_script=video_script, amount=5
+            video_subject=params.video_subject,
+            video_script=video_script,
+            amount=5,
+            mode=getattr(params, "mode", "faceless"),
         )
     else:
         if isinstance(video_terms, str):
