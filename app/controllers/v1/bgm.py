@@ -14,11 +14,12 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from loguru import logger
 
 from app.controllers.v1.base import new_router
 from app.controllers.v1.uploads import _probe_audio_duration
+from app.middleware.jwt_auth import jwt_required
 from app.utils import utils
 
 router = new_router()
@@ -28,7 +29,10 @@ router = new_router()
     "/bgm/tracks",
     summary="List bundled BGM tracks with duration metadata (spec 010)",
 )
-def list_bgm_tracks(request: Request) -> dict[str, Any]:
+def list_bgm_tracks(
+    request: Request,
+    _: dict = Depends(jwt_required),
+) -> dict[str, Any]:
     song_dir = utils.song_dir()
     if not os.path.isdir(song_dir):
         raise HTTPException(
