@@ -159,50 +159,37 @@ async def jwt_required(request: Request) -> dict[str, Any]:
 
 
 async def jwt_required_with_body_injection(request: Request) -> dict[str, Any]:
-    """Variant for JSON-body endpoints — also injects tenant_id + user_id
-    into the request body so downstream Pydantic models (VideoParams)
-    pick them up.
+    """Backwards-compatible alias for ``jwt_required``.
 
-    Multipart bodies are NOT modified; this variant detects them and skips
-    injection silently.
+    Earlier drafts of this middleware mutated request._body to inject
+    tenant context into the body bytes BEFORE Pydantic parsing — that
+    approach didn't propagate through FastAPI's body parser (which uses
+    the ASGI receive callable, not request._body). The reliable pattern
+    is post-parse injection: route handlers depend on ``jwt_required``,
+    receive the claims dict, and assign tenant_id/user_id onto the
+    parsed Pydantic body via ``apply_tenant_context_to_body()``.
     """
-    claims = await jwt_required(request)
+    return await jwt_required(request)
 
-    if request.method not in ("POST", "PUT", "PATCH"):
-        return claims
 
-    content_type = request.headers.get("content-type", "")
-    if "multipart" in content_type.lower():
-        # Multipart — body is binary; tenant context goes via request.state only.
-        return claims
+def apply_tenant_context_to_body(body, claims: dict[str, Any]) -> None:
+    """Set body.tenant_id and body.user_id from JWT claims (post-parse).
 
-    body_bytes = await request.body()
-    if not body_bytes:
-        return claims
-
-    try:
-        body_json = json.loads(body_bytes)
-    except json.JSONDecodeError:
-        # Not JSON — leave the body alone.
-        return claims
-
-    if not isinstance(body_json, dict):
-        return claims
-
-    body_json.setdefault("tenant_id", claims["tenant_id"])
-    body_json.setdefault("user_id", claims["user_id"])
-    new_body = json.dumps(body_json).encode("utf-8")
-
-    # Replace the cached body AND the receive callable. Starlette caches the
-    # first body read in request._body — overwrite it so subsequent body()
-    # calls (e.g. by FastAPI's Pydantic parser) see the augmented version.
-    request._body = new_body  # type: ignore[attr-defined]
-
-    async def receive():
-        return {"type": "http.request", "body": new_body, "more_body": False}
-
-    request._receive = receive  # type: ignore[attr-defined]
-    return claims
+    Idempotent: existing non-empty values on the body are preserved
+    (allows callers to override the JWT's tenant context for special
+    flows, though this isn't a Step-2 use case).
+    """
+    if not getattr(body, "tenant_id", None):
+        try:
+            body.tenant_id = claims["tenant_id"]
+        except (AttributeError, TypeError, ValueError):
+            # Pydantic field doesn't exist or model frozen — non-fatal.
+            pass
+    if not getattr(body, "user_id", None):
+        try:
+            body.user_id = claims["user_id"]
+        except (AttributeError, TypeError, ValueError):
+            pass
 
 
 def verify_production_safety() -> None:

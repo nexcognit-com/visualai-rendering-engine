@@ -11,8 +11,8 @@ from loguru import logger
 
 from app.config import config
 from app.middleware.jwt_auth import (
+    apply_tenant_context_to_body,
     jwt_required,
-    jwt_required_with_body_injection,
 )
 from app.controllers import base
 from app.controllers.manager.memory_manager import InMemoryTaskManager
@@ -107,8 +107,9 @@ def create_video(
     background_tasks: BackgroundTasks,
     request: Request,
     body: TaskVideoRequest,
-    _: dict = Depends(jwt_required_with_body_injection),
+    claims: dict = Depends(jwt_required),
 ):
+    apply_tenant_context_to_body(body, claims)
     return create_task(request, body, stop_at="video")
 
 
@@ -117,8 +118,9 @@ def create_subtitle(
     background_tasks: BackgroundTasks,
     request: Request,
     body: SubtitleRequest,
-    _: dict = Depends(jwt_required_with_body_injection),
+    claims: dict = Depends(jwt_required),
 ):
+    apply_tenant_context_to_body(body, claims)
     return create_task(request, body, stop_at="subtitle")
 
 
@@ -127,8 +129,9 @@ def create_audio(
     background_tasks: BackgroundTasks,
     request: Request,
     body: AudioRequest,
-    _: dict = Depends(jwt_required_with_body_injection),
+    claims: dict = Depends(jwt_required),
 ):
+    apply_tenant_context_to_body(body, claims)
     return create_task(request, body, stop_at="audio")
 
 
