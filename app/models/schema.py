@@ -117,6 +117,13 @@ class VideoParams(BaseModel):
     n_threads: Optional[int] = 2
     paragraph_number: Optional[int] = 1
 
+    # Spec 014: tenant context. Required at runtime when
+    # LAYER3_REQUIRE_TENANT_CONTEXT=true (production default after Step 2).
+    # JWT middleware injects these from claims into the request body before
+    # Pydantic parsing so production controllers always see them populated.
+    tenant_id: Optional[str] = None
+    user_id: Optional[str] = None
+
     # Spec 006: visuals source mode. None preserves legacy behavior (Pexels-only
     # auto path — every existing render). "auto" is an explicit flavor of legacy.
     # "user_uploaded" routes through material.download_videos's new branch that
@@ -149,6 +156,28 @@ class VideoParams(BaseModel):
         if self.uploaded_model_path:
             _require_under_uploads(self.uploaded_model_path)
         return self
+
+    @model_validator(mode="after")
+    def _validate_tenant_context(self) -> "VideoParams":
+        """Spec 014: enforce tenant context when production-flag is set.
+
+        Read at validate-time so tests can monkey-patch without restart.
+        Defaults to false in dev so legacy callers continue to work during
+        the Step 1 → Step 2 transition window.
+        """
+        if not _require_tenant_context():
+            return self
+        if not self.tenant_id or not self.tenant_id.strip():
+            raise ValueError("tenant_id_required")
+        if not self.user_id or not self.user_id.strip():
+            raise ValueError("user_id_required")
+        return self
+
+
+def _require_tenant_context() -> bool:
+    return os.environ.get("LAYER3_REQUIRE_TENANT_CONTEXT", "false").lower() in (
+        "true", "1", "yes",
+    )
 
 
 def _require_under_uploads(path: str) -> None:

@@ -22,10 +22,11 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from fastapi import File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, File, Form, HTTPException, Request, UploadFile
 from loguru import logger
 
 from app.controllers.v1.base import new_router
+from app.middleware.jwt_auth import jwt_required
 from app.utils import utils
 
 router = new_router()
@@ -156,7 +157,11 @@ def _probe_audio_duration(path: str) -> float | None:
     "/uploads/audio",
     summary="Upload a custom audio track for per-render BGM (spec 010)",
 )
-def upload_audio(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+def upload_audio(
+    request: Request,
+    file: UploadFile = File(...),
+    _: dict = Depends(jwt_required),
+) -> dict[str, Any]:
     body, mime, ext = _validate_upload(file, _AUDIO_MIMES, _MAX_AUDIO_BYTES)
 
     upload_dir = utils.storage_dir("uploads", create=True)
@@ -351,6 +356,7 @@ def upload_image(
     request: Request,
     file: UploadFile = File(...),
     role: str | None = Form(None),
+    _: dict = Depends(jwt_required),
 ) -> dict[str, Any]:
     role_validated = _validate_role(role)
     body, mime, ext = _validate_upload(file, _IMAGE_MIMES, _MAX_IMAGE_BYTES)

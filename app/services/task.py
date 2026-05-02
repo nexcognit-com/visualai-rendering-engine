@@ -304,6 +304,18 @@ def generate_final_videos(
 
 
 def start(task_id, params: VideoParams, stop_at: str = "video"):
+    # Spec 014: re-bind Loguru context inside the worker thread. The
+    # request-handler thread's contextualize block doesn't propagate to
+    # this thread; the dispatcher passes tenant_id + user_id via
+    # VideoParams (FR-011) and we re-bind here so every log line emitted
+    # during the render carries tenant attribution.
+    tenant_id = getattr(params, "tenant_id", None) or "-"
+    user_id = getattr(params, "user_id", None) or "-"
+    with logger.contextualize(tenant_id=tenant_id, user_id=user_id, task_id=task_id):
+        return _start_inner(task_id, params, stop_at)
+
+
+def _start_inner(task_id, params: VideoParams, stop_at: str = "video"):
     logger.info(f"start task: {task_id}, stop_at: {stop_at}")
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=5)
 

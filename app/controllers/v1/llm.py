@@ -1,9 +1,10 @@
 from typing import Optional
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.controllers.v1.base import new_router
+from app.middleware.jwt_auth import jwt_required, jwt_required_with_body_injection
 from app.models.schema import (
     VideoScriptRequest,
     VideoScriptResponse,
@@ -23,7 +24,11 @@ router = new_router()
     response_model=VideoScriptResponse,
     summary="Create a script for the video",
 )
-def generate_video_script(request: Request, body: VideoScriptRequest):
+def generate_video_script(
+    request: Request,
+    body: VideoScriptRequest,
+    _: dict = Depends(jwt_required_with_body_injection),
+):
     video_script = llm.generate_script(
         video_subject=body.video_subject,
         language=body.video_language,
@@ -38,7 +43,11 @@ def generate_video_script(request: Request, body: VideoScriptRequest):
     response_model=VideoTermsResponse,
     summary="Generate video terms based on the video script",
 )
-def generate_video_terms(request: Request, body: VideoTermsRequest):
+def generate_video_terms(
+    request: Request,
+    body: VideoTermsRequest,
+    _: dict = Depends(jwt_required_with_body_injection),
+):
     video_terms = llm.generate_terms(
         video_subject=body.video_subject,
         video_script=body.video_script,
@@ -68,7 +77,11 @@ class PolishPreviewRequest(BaseModel):
     "/scripts/polish-preview",
     summary="Preview a polished script (no render dispatch)",
 )
-def polish_preview(request: Request, body: PolishPreviewRequest):
+def polish_preview(
+    request: Request,
+    body: PolishPreviewRequest,
+    _: dict = Depends(jwt_required_with_body_injection),
+):
     if not body.brief or not body.brief.strip():
         raise HTTPException(
             status_code=400,

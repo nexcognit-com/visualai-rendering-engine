@@ -10,6 +10,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from loguru import logger
 
 from app.config import config
+from app.middleware.jwt_auth import (
+    jwt_required,
+    jwt_required_with_body_injection,
+)
 from app.controllers import base
 from app.controllers.manager.memory_manager import InMemoryTaskManager
 from app.controllers.manager.redis_manager import RedisTaskManager
@@ -100,21 +104,30 @@ def _resolve_path_within_directory(base_dir: str, unsafe_path: str, request_id: 
 
 @router.post("/videos", response_model=TaskResponse, summary="Generate a short video")
 def create_video(
-    background_tasks: BackgroundTasks, request: Request, body: TaskVideoRequest
+    background_tasks: BackgroundTasks,
+    request: Request,
+    body: TaskVideoRequest,
+    _: dict = Depends(jwt_required_with_body_injection),
 ):
     return create_task(request, body, stop_at="video")
 
 
 @router.post("/subtitle", response_model=TaskResponse, summary="Generate subtitle only")
 def create_subtitle(
-    background_tasks: BackgroundTasks, request: Request, body: SubtitleRequest
+    background_tasks: BackgroundTasks,
+    request: Request,
+    body: SubtitleRequest,
+    _: dict = Depends(jwt_required_with_body_injection),
 ):
     return create_task(request, body, stop_at="subtitle")
 
 
 @router.post("/audio", response_model=TaskResponse, summary="Generate audio only")
 def create_audio(
-    background_tasks: BackgroundTasks, request: Request, body: AudioRequest
+    background_tasks: BackgroundTasks,
+    request: Request,
+    body: AudioRequest,
+    _: dict = Depends(jwt_required_with_body_injection),
 ):
     return create_task(request, body, stop_at="audio")
 
@@ -212,7 +225,12 @@ def _maybe_write_visuals_sidecar(task_id: str, body, request_id: str) -> None:
 from fastapi import Query
 
 @router.get("/tasks", response_model=TaskQueryResponse, summary="Get all tasks")
-def get_all_tasks(request: Request, page: int = Query(1, ge=1), page_size: int = Query(10, ge=1)):
+def get_all_tasks(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1),
+    _: dict = Depends(jwt_required),
+):
     request_id = base.get_task_id(request)
     tasks, total = sm.state.get_all_tasks(page, page_size)
 
@@ -233,6 +251,7 @@ def get_task(
     request: Request,
     task_id: str = Path(..., description="Task ID"),
     query: TaskQueryRequest = Depends(),
+    _: dict = Depends(jwt_required),
 ):
     endpoint = config.app.get("endpoint", "")
     if not endpoint:
