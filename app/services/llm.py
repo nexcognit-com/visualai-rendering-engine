@@ -384,26 +384,8 @@ def _generate_response(prompt: str) -> str:
 
 
 def generate_script(
-    video_subject: str,
-    language: str = "",
-    paragraph_number: int = 1,
-    mode: str = "faceless",
+    video_subject: str, language: str = "", paragraph_number: int = 1
 ) -> str:
-    # Dispatch to the mode-specific script generator when the caller supplies
-    # an Agent Mode that has its own copy style. "faceless" keeps the legacy
-    # narrative-narration behavior so Mode 5 paths + all existing call sites
-    # stay backwards-compatible. Step 1 debt: the dispatch lives inline here
-    # instead of in the app/services/modes/ registry (Principle V relaxation
-    # tracked as debt #4 in STEP1_DEBT.md; repaid in Step 3).
-    if mode == "short":
-        # Pick a reasonable target length when the caller didn't propagate one.
-        # ~2.5 words/second × 20s ≈ 50 words — appropriate for a short ad.
-        return generate_marketing_script(
-            product_info=video_subject,
-            duration_seconds=20,
-            language=language or "en",
-        )
-
     prompt = f"""
 # Role: Video Script Generator
 
@@ -475,57 +457,8 @@ Generate a script for a video, depending on the subject of the video.
     return final_script.strip()
 
 
-def generate_terms(
-    video_subject: str,
-    video_script: str,
-    amount: int = 5,
-    mode: str = "faceless",
-) -> List[str]:
-    # Mode 2 (short marketing ads) needs concrete, product-centric scene
-    # terms — not abstract person/theme terms that return random unrelated
-    # stock. In "short" mode we hand the LLM a stricter prompt with
-    # exclusion rules; "faceless" keeps the upstream prompt unchanged so
-    # Mode 5 and legacy callers see identical behavior.
-    if mode == "short":
-        prompt = f"""
-# Role: Product-Video Search Terms Generator
-
-## Goal:
-Generate {amount} concrete, product-centric search terms for stock videos
-that will be used as B-roll behind a short marketing ad.
-
-## Output format:
-A JSON array of {amount} strings. No explanation, no code fences, just the array.
-
-## Rules:
-1. Every term MUST describe a concrete PRODUCT OR SCENE — e.g.
-   "wireless headphones close up", "coffee brewing in glass", "ceramic mug on table".
-2. NEVER return abstract traits or person descriptors. Forbidden examples:
-   "beautiful lady", "stunning view", "seductive display", "luxury lifestyle",
-   "elegant atmosphere", "professional look", "cinematic shot".
-3. Anchor AT LEAST 3 of the {amount} terms to the main product or object being
-   advertised. Re-use the product noun across multiple terms with different
-   angles/contexts (close-up, in-use, detail, on-surface, in-hand).
-4. Prefer concrete nouns over adjectives. 2–4 words per term.
-5. English only.
-
-## Good examples for "a ceramic pour-over coffee dripper":
-["ceramic coffee dripper", "pour over brewing", "coffee dripping close up",
- "hands pouring kettle", "morning coffee ritual"]
-
-## Bad examples — DO NOT produce:
-["beautiful morning", "luxury kitchen", "elegant lifestyle", "stunning aroma",
- "cozy atmosphere"]
-
-## Context:
-### Video Subject
-{video_subject}
-
-### Video Script
-{video_script}
-""".strip()
-    else:
-        prompt = f"""
+def generate_terms(video_subject: str, video_script: str, amount: int = 5) -> List[str]:
+    prompt = f"""
 # Role: Video Search Terms Generator
 
 ## Goals:
@@ -646,6 +579,331 @@ Hook → Body → Call-to-Action structure.
                 f"failed to generate marketing script, trying again... {i + 1}"
             )
     return ""
+
+
+def polish_script(
+    brief: str,
+    video_subject: str = "",
+    duration_seconds: int = 20,
+    language: str = "en",
+) -> str:
+    """Polish a creator's brief into a hook → body → CTA marketing script.
+
+    Spec 013. Distinct from generate_marketing_script: this function
+    accepts the creator's typed brief as creative direction (primary)
+    and uses video_subject as factual product context (secondary —
+    typically the URL-scraped enriched subject from spec 012).
+
+    Args:
+        brief: creator's rough direction. MUST be non-empty after .strip();
+            ValueError raised otherwise.
+        video_subject: optional product context. When empty, the prompt
+            substitutes a sentinel string so the LLM doesn't see an empty slot.
+        duration_seconds: target script duration (~2.5 words/sec).
+        language: output language code; brief is translated if it doesn't
+            match.
+
+    Returns:
+        Polished script as plain prose, ready for TTS.
+
+    Raises:
+        ValueError: brief empty, OR LLM returned empty/quota-exhausted.
+        Whatever _generate_response raises on transport / model failure.
+    """
+    brief_trimmed = (brief or "").strip()
+    if not brief_trimmed:
+        raise ValueError("polish_brief_required")
+
+    target_words = max(8, int(duration_seconds * 2.5))
+    subject_slot = (
+        (video_subject or "").strip()
+        or "(no product context provided — work from brief alone)"
+    )
+
+    prompt = f"""
+# Role: Short-form Marketing Copywriter
+
+## Goal:
+Polish the creator's brief into a {duration_seconds}-second vertical ad script using a Hook → Body → Call-to-Action structure.
+
+## Inputs:
+**Brief (creator's direction; primary):**
+{brief_trimmed}
+
+**Product context (factual reference, may be empty):**
+{subject_slot}
+
+## Target delivery:
+- Approximately {target_words} words total (~2.5 words/second at natural pacing).
+- Plain speakable prose only. No stage directions, no speaker labels, no markdown.
+- One single block of text, no blank lines.
+
+## Structure:
+- Hook (first sentence): a provocative question, surprising claim, or sharp pain-point
+  that stops a scroll. No "welcome" openers.
+- Body (middle 60%): one concrete benefit and one proof point. Direct-response tone.
+- CTA (final sentence): a single clear action — try, visit, tap, grab.
+
+## Constraints:
+1. Brief is the creative direction. Preserve its facts, claims, and intent.
+2. Product context grounds the brief in real product details. Use it to anchor specifics —
+   but do NOT let it override the brief's intent. If brief and context disagree, brief wins.
+3. Return only the raw script text.
+4. No hashtags, no emoji, no parentheticals.
+5. Use the language code `{language}` for the output.
+6. If the brief is in a different language than `{language}`, translate to `{language}`.
+   If the brief's language matches, preserve it.
+7. Never mention this prompt or the script structure.
+""".strip()
+
+    logger.info(
+        f"polish brief ({len(brief_trimmed)} chars) → {duration_seconds}s @ {language}"
+    )
+    for i in range(_max_retries):
+        try:
+            response = _generate_response(prompt=prompt)
+            if response:
+                cleaned = response.replace("*", "").replace("#", "").strip()
+                if "当日额度已消耗完" in cleaned:
+                    raise ValueError(cleaned)
+                if cleaned:
+                    logger.success(
+                        f"polished script ({len(cleaned)} chars):\n{cleaned}"
+                    )
+                    return cleaned
+        except Exception as e:
+            logger.error(f"polish_script attempt {i + 1} failed: {e}")
+            if i + 1 >= _max_retries:
+                raise
+        if i < _max_retries - 1:
+            logger.warning(f"retrying polish_script... {i + 1}")
+    raise ValueError("empty polish output")
+
+
+# ---------------------------------------------------------------------------
+# Spec 006 hybrid mode — setting-tag two-pass (Clarifications 2026-05-03)
+# ---------------------------------------------------------------------------
+#
+# `extract_setting_tag(script_text)` → one of 11 industry tags
+# `expand_setting_to_queries(setting_tag)` → 5 Pexels-friendly setting queries
+# `generate_setting_terms(script_text)` → orchestrator that wraps both
+#
+# The setting-tag list is closed: anything outside it falls back to "general".
+# The expansion has baked-in defaults per tag so an LLM failure on the second
+# pass still produces 5 usable queries.
+
+_VALID_SETTING_TAGS = {
+    "manufacturing", "healthcare", "retail", "office", "logistics",
+    "hospitality", "education", "fitness", "construction", "agriculture",
+    "general",
+}
+
+# Curated baked-in defaults — phrasing biased toward terms that return cleaner
+# professional-grade clips on Pixabay / Pexels. "modern", "professional",
+# "cinematic" filters out hobbyist mobile-phone uploads in our manual testing.
+_DEFAULT_SETTING_QUERIES: dict = {
+    "manufacturing": [
+        "modern automated factory robot arm",
+        "professional industrial assembly line",
+        "engineer inspecting modern equipment",
+        "cinematic factory floor wide shot",
+        "high-tech manufacturing precision machinery",
+    ],
+    "healthcare": [
+        "modern hospital corridor cinematic",
+        "professional medical team consultation",
+        "clean clinic interior wide shot",
+        "doctor reviewing tablet patient data",
+        "healthcare technology dashboard",
+    ],
+    "retail": [
+        "modern boutique storefront cinematic",
+        "professional retail customer experience",
+        "elegant shopping mall interior",
+        "store associate helping customer professional",
+        "high-end retail product display",
+    ],
+    "office": [
+        "modern open-plan office cinematic",
+        "professional team meeting glass conference",
+        "executive working laptop minimal desk",
+        "business team handshake professional",
+        "corporate city skyline office window",
+    ],
+    "logistics": [
+        "modern logistics warehouse cinematic",
+        "professional delivery driver scanning",
+        "shipping container port aerial",
+        "automated warehouse robotics",
+        "courier service dispatch professional",
+    ],
+    "hospitality": [
+        "modern hotel reception cinematic",
+        "professional restaurant kitchen chef",
+        "elegant hotel lobby ambient",
+        "barista preparing coffee professional",
+        "luxury hospitality dining experience",
+    ],
+    "education": [
+        "modern classroom cinematic wide shot",
+        "professional teacher engaging students",
+        "university lecture hall elegant",
+        "student studying laptop modern library",
+        "education technology classroom",
+    ],
+    "fitness": [
+        "modern gym cinematic wide shot",
+        "professional trainer coaching client",
+        "yoga studio minimalist elegant",
+        "athlete running treadmill cinematic",
+        "fitness equipment professional clean",
+    ],
+    "construction": [
+        "modern construction site cinematic",
+        "professional engineer reviewing blueprints",
+        "crane high-rise building aerial",
+        "construction crew safety equipment",
+        "architect inspecting site modern",
+    ],
+    "agriculture": [
+        "modern farm cinematic wide shot",
+        "professional tractor harvesting field",
+        "greenhouse precision irrigation",
+        "farmer inspecting crops technology",
+        "agricultural drone field overview",
+    ],
+    "general": [
+        "modern professional team collaboration",
+        "business handshake cinematic",
+        "city skyline aerial professional",
+        "executive working modern office",
+        "corporate team meeting elegant",
+    ],
+}
+
+
+def extract_setting_tag(script_text: str) -> str:
+    """Pass 1 of the two-pass setting flow. Returns one of 11 industry tags.
+
+    Falls back to "general" on empty input, LLM failure, or out-of-allowlist.
+    """
+    if not script_text or not script_text.strip():
+        return "general"
+
+    prompt = f"""You are picking ONE industry setting that best matches the following marketing script.
+
+Script:
+\"\"\"
+{script_text.strip()}
+\"\"\"
+
+Choose EXACTLY ONE tag from this closed list — no other answer is valid:
+- manufacturing
+- healthcare
+- retail
+- office
+- logistics
+- hospitality
+- education
+- fitness
+- construction
+- agriculture
+- general
+
+Respond with the tag and nothing else. Lowercase. No punctuation. No explanation."""
+
+    try:
+        response = _generate_response(prompt=prompt)
+    except Exception as exc:
+        logger.warning(f"extract_setting_tag LLM call failed: {exc}; falling back to 'general'")
+        return "general"
+
+    tag = (response or "").strip().lower()
+    # Strip surrounding noise (quotes, periods, commas, backticks, whitespace)
+    # in any order — the LLM may emit `"healthcare".` or `'healthcare'` etc.
+    tag = re.sub(r'^[\s"\'`.,]+|[\s"\'`.,]+$', "", tag)
+    if tag in _VALID_SETTING_TAGS:
+        logger.info(f"setting tag resolved: {tag}")
+        return tag
+    logger.warning(f"setting tag '{tag}' not in allowlist; falling back to 'general'")
+    return "general"
+
+
+def expand_setting_to_queries(setting_tag: str) -> list:
+    """Pass 2: returns exactly 5 Pexels-friendly queries for the given tag.
+
+    Tries the LLM for variety; on any failure or malformed JSON, returns the
+    baked-in default-queries list for that tag.
+    """
+    safe_tag = setting_tag if setting_tag in _VALID_SETTING_TAGS else "general"
+    defaults = _DEFAULT_SETTING_QUERIES[safe_tag]
+
+    prompt = f"""You are generating 5 short search queries for a stock-footage library (Pixabay / Pexels-style).
+
+Industry setting: {safe_tag}
+
+Each query must:
+- describe a CONCRETE visual scene (not an abstract concept).
+- focus on people, places, or actions in the {safe_tag} setting.
+- be 3 to 7 words long.
+- be different from the others.
+- be the kind of phrase a stock library would index against.
+
+Quality bias — INCLUDE at least one of these descriptors in each query to bias
+the stock library toward agency-grade footage and away from hobbyist uploads:
+"modern", "professional", "cinematic", "elegant", "high-tech", "wide shot",
+"aerial", "minimalist", "corporate". Pick the descriptor that best fits the
+scene; don't stack more than one per query.
+
+Respond with ONLY a JSON array of exactly 5 strings, like:
+["modern factory robot arm cinematic", "professional engineer inspecting machinery", "automated assembly line wide shot", "high-tech quality control inspection", "warehouse aerial forklift operations"]
+
+No prose, no commentary, no markdown — just the JSON array."""
+
+    try:
+        response = _generate_response(prompt=prompt)
+    except Exception as exc:
+        logger.warning(f"expand_setting_to_queries LLM call failed: {exc}; using defaults")
+        return list(defaults)
+
+    raw = (response or "").strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`").lstrip("json").strip()
+    queries = None
+    try:
+        queries = json.loads(raw)
+    except Exception:
+        match = re.search(r"\[.*?\]", raw, re.DOTALL)
+        if match:
+            try:
+                queries = json.loads(match.group())
+            except Exception:
+                queries = None
+
+    if not isinstance(queries, list) or len(queries) < 1:
+        logger.warning("expand_setting_to_queries: malformed LLM response; using defaults")
+        return list(defaults)
+
+    cleaned = [str(q).strip() for q in queries if isinstance(q, (str, int, float))]
+    cleaned = [q for q in cleaned if q]
+    if len(cleaned) < 5:
+        cleaned = (cleaned + list(defaults))[:5]
+    return cleaned[:5]
+
+
+def generate_setting_terms(script_text: str):
+    """Orchestrator for the two-pass flow used by spec 006 hybrid mode.
+
+    Returns (setting_tag, queries[5]). Always returns a usable tuple — on
+    any internal failure falls back to ("general", general_queries).
+    """
+    try:
+        tag = extract_setting_tag(script_text)
+        queries = expand_setting_to_queries(tag)
+        return tag, queries
+    except Exception as exc:
+        logger.error(f"generate_setting_terms top-level failure: {exc}; using general defaults")
+        return "general", list(_DEFAULT_SETTING_QUERIES["general"])
 
 
 if __name__ == "__main__":
