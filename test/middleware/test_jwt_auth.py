@@ -22,8 +22,8 @@ os.environ["LAYER2_JWT_SIGNING_KEY"] = TEST_SIGNING_KEY
 from app.middleware.jwt_auth import (  # noqa: E402
     AUDIENCE,
     ISSUER,
+    apply_tenant_context_to_body,
     jwt_required,
-    jwt_required_with_body_injection,
     verify_production_safety,
 )
 
@@ -176,87 +176,50 @@ async def test_jwt9_valid_token_sets_request_state() -> None:
     assert request.state.request_id == "test-jti-abc"
 
 
-@pytest.mark.asyncio
-async def test_jwt10_body_injection_adds_tenant_fields() -> None:
-    """JWT-10: JSON body without tenant_id gets it injected before parsing."""
-    import json
+def test_jwt10_apply_tenant_context_sets_fields() -> None:
+    """JWT-10: apply_tenant_context_to_body() copies claim values onto a
+    Pydantic model post-parse.
 
-    token = _mint_test_jwt(tenant_id="injected-tenant")
-    body_in = json.dumps({"video_subject": "x"}).encode("utf-8")
+    Updated for spec 014 review-pass: body-stream mutation didn't work
+    through FastAPI's body parser. Switched to post-parse injection in
+    each route handler, which is robust and obvious.
+    """
+    from app.middleware.jwt_auth import apply_tenant_context_to_body
+    from app.models.schema import VideoParams
 
-    raw_headers = [
-        (b"authorization", f"Bearer {token}".encode()),
-        (b"content-type", b"application/json"),
-    ]
-    receive_called = {"count": 0}
+    body = VideoParams(video_subject="x")
+    assert body.tenant_id is None
 
-    async def receive():
-        receive_called["count"] += 1
-        return {"type": "http.request", "body": body_in, "more_body": False}
-
-    scope = {
-        "type": "http", "method": "POST", "path": "/api/v1/videos",
-        "headers": raw_headers, "query_string": b"",
-        "client": ("127.0.0.1", 12345),
-    }
-    request = Request(scope=scope, receive=receive)
-
-    await jwt_required_with_body_injection(request)
-
-    # The request body should now have tenant_id merged in.
-    new_body = await request.body()
-    parsed = json.loads(new_body)
-    assert parsed["tenant_id"] == "injected-tenant"
-    assert parsed["video_subject"] == "x"
+    apply_tenant_context_to_body(body, {"tenant_id": "injected-tenant", "user_id": "injected-user"})
+    assert body.tenant_id == "injected-tenant"
+    assert body.user_id == "injected-user"
 
 
-@pytest.mark.asyncio
-async def test_jwt11_body_injection_preserves_existing_tenant_id() -> None:
-    """JWT-11: if body already has tenant_id, middleware doesn't overwrite."""
-    import json
+def test_jwt11_apply_tenant_context_preserves_existing() -> None:
+    """JWT-11: existing non-empty body fields aren't overwritten."""
+    from app.middleware.jwt_auth import apply_tenant_context_to_body
+    from app.models.schema import VideoParams
 
-    token = _mint_test_jwt(tenant_id="from-jwt")
-    body_in = json.dumps({"tenant_id": "from-body", "video_subject": "x"}).encode("utf-8")
-
-    async def receive():
-        return {"type": "http.request", "body": body_in, "more_body": False}
-
-    scope = {
-        "type": "http", "method": "POST", "path": "/api/v1/videos",
-        "headers": [
-            (b"authorization", f"Bearer {token}".encode()),
-            (b"content-type", b"application/json"),
-        ],
-        "query_string": b"", "client": ("127.0.0.1", 12345),
-    }
-    request = Request(scope=scope, receive=receive)
-    await jwt_required_with_body_injection(request)
-    new_body = await request.body()
-    parsed = json.loads(new_body)
-    # setdefault preserves the body's existing value
-    assert parsed["tenant_id"] == "from-body"
+    body = VideoParams(video_subject="x", tenant_id="from-body")
+    apply_tenant_context_to_body(body, {"tenant_id": "from-jwt", "user_id": "from-jwt-user"})
+    assert body.tenant_id == "from-body"  # preserved
+    assert body.user_id == "from-jwt-user"  # filled (was empty)
 
 
-@pytest.mark.asyncio
-async def test_jwt12_multipart_body_not_modified() -> None:
-    """JWT-12: multipart bodies pass through without injection."""
-    token = _mint_test_jwt()
+def test_jwt12_apply_tenant_context_silent_on_unknown_field() -> None:
+    """JWT-12: applying to a model without these fields doesn't crash."""
+    from app.middleware.jwt_auth import apply_tenant_context_to_body
+    from pydantic import BaseModel
 
-    async def receive():
-        return {"type": "http.request", "body": b"--boundary--", "more_body": False}
+    class TinyBody(BaseModel):
+        x: str = "x"
 
-    scope = {
-        "type": "http", "method": "POST", "path": "/api/v1/uploads/image",
-        "headers": [
-            (b"authorization", f"Bearer {token}".encode()),
-            (b"content-type", b"multipart/form-data; boundary=boundary"),
-        ],
-        "query_string": b"", "client": ("127.0.0.1", 12345),
-    }
-    request = Request(scope=scope, receive=receive)
-    await jwt_required_with_body_injection(request)
-    body = await request.body()
-    assert body == b"--boundary--"  # unchanged
+    body = TinyBody()
+    # Pydantic v2 raises on attribute assignment for unknown fields if
+    # model_config doesn't allow extra. apply_tenant_context_to_body
+    # catches the error and continues (non-fatal).
+    apply_tenant_context_to_body(body, {"tenant_id": "x", "user_id": "y"})
+    # No assertion needed — the test passes if no exception leaked.
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,7 @@ from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.controllers.v1.base import new_router
-from app.middleware.jwt_auth import jwt_required, jwt_required_with_body_injection
+from app.middleware.jwt_auth import jwt_required
 from app.models.schema import (
     VideoScriptRequest,
     VideoScriptResponse,
@@ -27,7 +27,7 @@ router = new_router()
 def generate_video_script(
     request: Request,
     body: VideoScriptRequest,
-    _: dict = Depends(jwt_required_with_body_injection),
+    _: dict = Depends(jwt_required),
 ):
     video_script = llm.generate_script(
         video_subject=body.video_subject,
@@ -46,7 +46,7 @@ def generate_video_script(
 def generate_video_terms(
     request: Request,
     body: VideoTermsRequest,
-    _: dict = Depends(jwt_required_with_body_injection),
+    _: dict = Depends(jwt_required),
 ):
     video_terms = llm.generate_terms(
         video_subject=body.video_subject,
@@ -80,7 +80,7 @@ class PolishPreviewRequest(BaseModel):
 def polish_preview(
     request: Request,
     body: PolishPreviewRequest,
-    _: dict = Depends(jwt_required_with_body_injection),
+    _: dict = Depends(jwt_required),
 ):
     if not body.brief or not body.brief.strip():
         raise HTTPException(
