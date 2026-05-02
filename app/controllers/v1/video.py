@@ -127,6 +127,13 @@ def create_task(
     task_id = utils.get_uuid()
     request_id = base.get_task_id(request)
     try:
+        # Spec 006: when the wizard sent visuals_mode == "user_uploaded", write
+        # a sidecar at storage/tasks/<task_id>/visuals.json BEFORE dispatch so
+        # material.download_videos can short-circuit Pexels and use the
+        # uploaded paths instead. Pre-flight existence check on each path so a
+        # missing file fails fast with a clear error instead of mid-render.
+        _maybe_write_visuals_sidecar(task_id, body, request_id)
+
         task = {
             "task_id": task_id,
             "request_id": request_id,
@@ -140,6 +147,67 @@ def create_task(
         raise HttpException(
             task_id=task_id, status_code=400, message=f"{request_id}: {str(e)}"
         )
+
+
+def _maybe_write_visuals_sidecar(task_id: str, body, request_id: str) -> None:
+    """Spec 006 sidecar — written when visuals_mode is user_uploaded or hybrid.
+
+    For hybrid (Clarifications 2026-05-03), also resolves the setting tag and
+    expands it into 5 Pexels-friendly queries before dispatch, persisting both
+    into the sidecar so material.download_videos can read them.
+    """
+    visuals_mode = getattr(body, "visuals_mode", None)
+    if visuals_mode not in ("user_uploaded", "hybrid"):
+        return
+
+    model_path = getattr(body, "uploaded_model_path", None)
+    product_paths = list(getattr(body, "uploaded_product_paths", []) or [])
+
+    # Verify each path resolves to an actual file before dispatch.
+    repo_root = utils.root_dir()
+    for p in [pp for pp in [model_path, *product_paths] if pp]:
+        abs_p = p if os.path.isabs(p) else os.path.join(repo_root, p)
+        if not os.path.isfile(abs_p):
+            raise HttpException(
+                task_id=task_id,
+                status_code=400,
+                message=f"{request_id}: asset_not_found ({p})",
+            )
+
+    task_dir = utils.task_dir(task_id, create=True) if "create" in \
+        utils.task_dir.__code__.co_varnames else utils.task_dir(task_id)
+    if not os.path.isdir(task_dir):
+        os.makedirs(task_dir, exist_ok=True)
+
+    sidecar_path = os.path.join(task_dir, "visuals.json")
+    payload: dict = {
+        "visuals_mode": visuals_mode,
+        "uploaded_model_path": model_path,
+        "uploaded_product_paths": product_paths,
+    }
+
+    if visuals_mode == "hybrid":
+        # Resolve setting tag + queries from the script content. Use
+        # video_script when present, otherwise fall back to video_subject.
+        from app.services import llm as _llm
+        seed_text = (
+            (getattr(body, "video_script", "") or "").strip()
+            or (getattr(body, "video_subject", "") or "").strip()
+        )
+        try:
+            tag, queries = _llm.generate_setting_terms(seed_text)
+        except Exception as exc:
+            logger.warning(f"hybrid setting-tag resolution failed: {exc}; using general defaults")
+            tag = "general"
+            queries = list(_llm._DEFAULT_SETTING_QUERIES["general"])
+        payload["setting_tag"] = tag
+        payload["stock_queries"] = queries
+        logger.info(f"hybrid sidecar: setting_tag={tag}, {len(queries)} queries")
+
+    with open(sidecar_path, "w", encoding="utf-8") as f:
+        import json as _json
+        _json.dump(payload, f, indent=2)
+    logger.info(f"wrote visuals sidecar at {sidecar_path}")
 
 from fastapi import Query
 

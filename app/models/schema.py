@@ -1,9 +1,10 @@
+import os
 import warnings
 from enum import Enum
 from typing import Any, List, Literal, Optional, Union
 
 import pydantic
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from app.config import config
 
@@ -72,17 +73,18 @@ class VideoParams(BaseModel):
 
     video_subject: str
     video_script: str = ""  # Script used to generate the video
+    # Spec 013: explicit script-handling mode. None = legacy behavior:
+    # empty video_script → auto path; non-empty → verbatim. "auto"/"verbatim"
+    # are explicit flavors of those two; "polish" sends the user-typed text
+    # to llm.polish_script and uses the LLM's output as the spoken script.
+    script_mode: Optional[Literal["auto", "verbatim", "polish"]] = None
+    # Spec 013: preserved creator brief — populated only when
+    # script_mode == "polish". Original input is kept for provenance even
+    # though video_script gets overwritten with the polished output.
+    script_brief: Optional[str] = None
     video_terms: Optional[str | list] = None  # Keywords used to generate the video
-    # VisualAI Agent Mode. Optional; defaults to upstream behavior (faceless).
-    # "short" routes through app.services.llm.generate_marketing_script for
-    # hook-body-CTA copy. Added for Step 1 of the 5-step build plan.
-    mode: Optional[Literal["faceless", "short"]] = "faceless"
-    # Enum defaults use the enum INSTANCE (not `.value`) so Pydantic holds
-    # an Enum at runtime. Using the raw string default can cause downstream
-    # `.value` calls in services/material.py + services/video.py to blow up
-    # with AttributeError on StrEnum mixins under certain Pydantic versions.
-    video_aspect: Optional[VideoAspect] = VideoAspect.portrait
-    video_concat_mode: Optional[VideoConcatMode] = VideoConcatMode.random
+    video_aspect: Optional[VideoAspect] = VideoAspect.portrait.value
+    video_concat_mode: Optional[VideoConcatMode] = VideoConcatMode.random.value
     video_transition_mode: Optional[VideoTransitionMode] = None
     video_clip_duration: Optional[int] = 5
     video_count: Optional[int] = 1
@@ -114,6 +116,53 @@ class VideoParams(BaseModel):
     stroke_width: float = 1.5
     n_threads: Optional[int] = 2
     paragraph_number: Optional[int] = 1
+
+    # Spec 006: visuals source mode. None preserves legacy behavior (Pexels-only
+    # auto path — every existing render). "auto" is an explicit flavor of legacy.
+    # "user_uploaded" routes through material.download_videos's new branch that
+    # converts uploaded image paths into Ken Burns clips.
+    # "hybrid" (Clarifications 2026-05-03) interleaves user uploads with
+    # Pexels + Pixabay setting footage; see FR-022..FR-025.
+    visuals_mode: Optional[Literal["auto", "user_uploaded", "hybrid"]] = None
+
+    # Spec 006: filesystem path to the user's uploaded model image. Optional
+    # even when visuals_mode == "user_uploaded" (model is optional per FR-003).
+    # Path MUST resolve under storage/uploads/.
+    uploaded_model_path: Optional[str] = None
+
+    # Spec 006: ordered list of paths to user's uploaded product images.
+    # 1–3 entries required when visuals_mode == "user_uploaded".
+    uploaded_product_paths: List[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_visuals(self) -> "VideoParams":
+        # Both user_uploaded and hybrid modes require uploads + path checks.
+        # Auto + None skip validation entirely.
+        if self.visuals_mode not in ("user_uploaded", "hybrid"):
+            return self
+        if not self.uploaded_product_paths:
+            raise ValueError("no_product_assets")
+        if len(self.uploaded_product_paths) > 3:
+            raise ValueError("too_many_product_assets")
+        for p in self.uploaded_product_paths:
+            _require_under_uploads(p)
+        if self.uploaded_model_path:
+            _require_under_uploads(self.uploaded_model_path)
+        return self
+
+
+def _require_under_uploads(path: str) -> None:
+    """Reject any path that doesn't resolve under storage/uploads/.
+
+    Step 1 single-user means a basic path-traversal guard; Step 2 will scope
+    further to ``storage/uploads/<tenant_id>/`` via the same helper.
+    """
+    uploads_dir = os.path.realpath(os.path.join(os.getcwd(), "storage", "uploads"))
+    real = os.path.realpath(path) if os.path.isabs(path) else os.path.realpath(
+        os.path.join(os.getcwd(), path)
+    )
+    if not real.startswith(uploads_dir + os.sep) and real != uploads_dir:
+        raise ValueError("path_outside_uploads")
 
 
 class SubtitleRequest(BaseModel):

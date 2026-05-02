@@ -14,22 +14,74 @@ from app.utils import utils
 
 
 def generate_script(task_id, params):
+    """Dispatch script generation across the three modes from spec 013.
+
+    Per [contracts/script-mode-wire-shape.md] dispatch matrix:
+    - script_mode == "polish" + non-empty video_script → llm.polish_script
+    - script_mode == "polish" + empty → polish_brief_required (FR-006)
+    - script_mode == "verbatim" OR (None + non-empty video_script) → as-is
+    - script_mode == "auto" OR (None + empty video_script) → llm.generate_script
+
+    Tracked as Step 1 debt #5 — task.py is not a fork-surface file per
+    constitution Principle II; this function is the third touch line
+    (Step 1's two `mode=` plumbing edits + spec 013's polish dispatch).
+    All three repay together when Step 3 lands the
+    app/services/modes/ registry.
+    """
     logger.info("\n\n## generating video script")
-    video_script = params.video_script.strip()
-    if not video_script:
-        # Plumb Agent Mode through so Mode 2 ("short") routes to the
-        # marketing-ad copywriter inside llm.generate_script. Tracked as
-        # Step 1 debt #5 — task.py is not a fork-surface file per
-        # constitution Principle II; repaid when Step 3 lands the
-        # app/services/modes/ registry.
+    video_script = (params.video_script or "").strip()
+    script_mode = getattr(params, "script_mode", None)
+
+    # Polish branch — runs first so the explicit mode wins regardless of
+    # video_script content (the brief lives in video_script and gets
+    # overwritten with the polished output).
+    if script_mode == "polish":
+        if not video_script:
+            sm.state.update_task(
+                task_id,
+                state=const.TASK_STATE_FAILED,
+                error="polish_brief_required",
+            )
+            logger.error("polish mode requires a non-empty brief")
+            return None
+        try:
+            video_script = llm.polish_script(
+                brief=video_script,
+                video_subject=params.video_subject or "",
+                duration_seconds=20,
+                language=params.video_language or "en",
+            )
+        except Exception as exc:
+            logger.error(f"polish_script failed: {exc}")
+            sm.state.update_task(
+                task_id,
+                state=const.TASK_STATE_FAILED,
+                error="polish_failed",
+            )
+            return None
+        if not video_script:
+            sm.state.update_task(
+                task_id,
+                state=const.TASK_STATE_FAILED,
+                error="polish_failed",
+            )
+            logger.error("polish_script returned empty output")
+            return None
+        logger.debug(f"polished script: \n{video_script}")
+
+    # Verbatim branch (explicit OR legacy non-empty)
+    elif script_mode == "verbatim" or (script_mode is None and video_script):
+        logger.debug(f"video script: \n{video_script}")
+
+    # Auto branch (explicit OR legacy empty). The `mode` field is added to
+    # VideoParams in a later spec; on this branch we omit it so generate_script
+    # uses its default (faceless) behavior — which is fine for legacy callers.
+    else:
         video_script = llm.generate_script(
             video_subject=params.video_subject,
             language=params.video_language,
             paragraph_number=params.paragraph_number,
-            mode=getattr(params, "mode", "faceless"),
         )
-    else:
-        logger.debug(f"video script: \n{video_script}")
 
     if not video_script:
         sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
@@ -43,13 +95,8 @@ def generate_terms(task_id, params, video_script):
     logger.info("\n\n## generating video terms")
     video_terms = params.video_terms
     if not video_terms:
-        # Pass Agent Mode so Mode 2 uses the product-centric terms prompt
-        # (tracked under Step 1 debt #5).
         video_terms = llm.generate_terms(
-            video_subject=params.video_subject,
-            video_script=video_script,
-            amount=5,
-            mode=getattr(params, "mode", "faceless"),
+            video_subject=params.video_subject, video_script=video_script, amount=5
         )
     else:
         if isinstance(video_terms, str):
