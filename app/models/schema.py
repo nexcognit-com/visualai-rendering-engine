@@ -72,6 +72,15 @@ class VideoParams(BaseModel):
 
     video_subject: str
     video_script: str = ""  # Script used to generate the video
+    # Spec 013: explicit script-handling mode. None = legacy behavior:
+    # empty video_script → auto path; non-empty → verbatim. "auto"/"verbatim"
+    # are explicit flavors of those two; "polish" sends the user-typed text
+    # to llm.polish_script and uses the LLM's output as the spoken script.
+    script_mode: Optional[Literal["auto", "verbatim", "polish"]] = None
+    # Spec 013: preserved creator brief — populated only when
+    # script_mode == "polish". Original input is kept for provenance even
+    # though video_script gets overwritten with the polished output.
+    script_brief: Optional[str] = None
     video_terms: Optional[str | list] = None  # Keywords used to generate the video
     # VisualAI Agent Mode. Optional; defaults to upstream behavior (faceless).
     # "short" routes through app.services.llm.generate_marketing_script for

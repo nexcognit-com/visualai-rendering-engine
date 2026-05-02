@@ -648,6 +648,105 @@ Hook → Body → Call-to-Action structure.
     return ""
 
 
+def polish_script(
+    brief: str,
+    video_subject: str = "",
+    duration_seconds: int = 20,
+    language: str = "en",
+) -> str:
+    """Polish a creator's brief into a hook → body → CTA marketing script.
+
+    Spec 013. Distinct from generate_marketing_script: this function
+    accepts the creator's typed brief as creative direction (primary)
+    and uses video_subject as factual product context (secondary —
+    typically the URL-scraped enriched subject from spec 012).
+
+    Args:
+        brief: creator's rough direction. MUST be non-empty after .strip();
+            ValueError raised otherwise.
+        video_subject: optional product context. When empty, the prompt
+            substitutes a sentinel string so the LLM doesn't see an empty slot.
+        duration_seconds: target script duration (~2.5 words/sec).
+        language: output language code; brief is translated if it doesn't
+            match.
+
+    Returns:
+        Polished script as plain prose, ready for TTS.
+
+    Raises:
+        ValueError: brief empty, OR LLM returned empty/quota-exhausted.
+        Whatever _generate_response raises on transport / model failure.
+    """
+    brief_trimmed = (brief or "").strip()
+    if not brief_trimmed:
+        raise ValueError("polish_brief_required")
+
+    target_words = max(8, int(duration_seconds * 2.5))
+    subject_slot = (
+        (video_subject or "").strip()
+        or "(no product context provided — work from brief alone)"
+    )
+
+    prompt = f"""
+# Role: Short-form Marketing Copywriter
+
+## Goal:
+Polish the creator's brief into a {duration_seconds}-second vertical ad script using a Hook → Body → Call-to-Action structure.
+
+## Inputs:
+**Brief (creator's direction; primary):**
+{brief_trimmed}
+
+**Product context (factual reference, may be empty):**
+{subject_slot}
+
+## Target delivery:
+- Approximately {target_words} words total (~2.5 words/second at natural pacing).
+- Plain speakable prose only. No stage directions, no speaker labels, no markdown.
+- One single block of text, no blank lines.
+
+## Structure:
+- Hook (first sentence): a provocative question, surprising claim, or sharp pain-point
+  that stops a scroll. No "welcome" openers.
+- Body (middle 60%): one concrete benefit and one proof point. Direct-response tone.
+- CTA (final sentence): a single clear action — try, visit, tap, grab.
+
+## Constraints:
+1. Brief is the creative direction. Preserve its facts, claims, and intent.
+2. Product context grounds the brief in real product details. Use it to anchor specifics —
+   but do NOT let it override the brief's intent. If brief and context disagree, brief wins.
+3. Return only the raw script text.
+4. No hashtags, no emoji, no parentheticals.
+5. Use the language code `{language}` for the output.
+6. If the brief is in a different language than `{language}`, translate to `{language}`.
+   If the brief's language matches, preserve it.
+7. Never mention this prompt or the script structure.
+""".strip()
+
+    logger.info(
+        f"polish brief ({len(brief_trimmed)} chars) → {duration_seconds}s @ {language}"
+    )
+    for i in range(_max_retries):
+        try:
+            response = _generate_response(prompt=prompt)
+            if response:
+                cleaned = response.replace("*", "").replace("#", "").strip()
+                if "当日额度已消耗完" in cleaned:
+                    raise ValueError(cleaned)
+                if cleaned:
+                    logger.success(
+                        f"polished script ({len(cleaned)} chars):\n{cleaned}"
+                    )
+                    return cleaned
+        except Exception as e:
+            logger.error(f"polish_script attempt {i + 1} failed: {e}")
+            if i + 1 >= _max_retries:
+                raise
+        if i < _max_retries - 1:
+            logger.warning(f"retrying polish_script... {i + 1}")
+    raise ValueError("empty polish output")
+
+
 if __name__ == "__main__":
     video_subject = "生命的意义是什么"
     script = generate_script(
