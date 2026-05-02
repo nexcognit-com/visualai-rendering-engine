@@ -384,8 +384,26 @@ def _generate_response(prompt: str) -> str:
 
 
 def generate_script(
-    video_subject: str, language: str = "", paragraph_number: int = 1
+    video_subject: str,
+    language: str = "",
+    paragraph_number: int = 1,
+    mode: str = "faceless",
 ) -> str:
+    # Dispatch to the mode-specific script generator when the caller supplies
+    # an Agent Mode that has its own copy style. "faceless" keeps the legacy
+    # narrative-narration behavior so Mode 5 paths + all existing call sites
+    # stay backwards-compatible. Step 1 debt: the dispatch lives inline here
+    # instead of in the app/services/modes/ registry (Principle V relaxation
+    # tracked as debt #4 in STEP1_DEBT.md; repaid in Step 3).
+    if mode == "short":
+        # Pick a reasonable target length when the caller didn't propagate one.
+        # ~2.5 words/second × 20s ≈ 50 words — appropriate for a short ad.
+        return generate_marketing_script(
+            product_info=video_subject,
+            duration_seconds=20,
+            language=language or "en",
+        )
+
     prompt = f"""
 # Role: Video Script Generator
 
@@ -457,8 +475,57 @@ Generate a script for a video, depending on the subject of the video.
     return final_script.strip()
 
 
-def generate_terms(video_subject: str, video_script: str, amount: int = 5) -> List[str]:
-    prompt = f"""
+def generate_terms(
+    video_subject: str,
+    video_script: str,
+    amount: int = 5,
+    mode: str = "faceless",
+) -> List[str]:
+    # Mode 2 (short marketing ads) needs concrete, product-centric scene
+    # terms — not abstract person/theme terms that return random unrelated
+    # stock. In "short" mode we hand the LLM a stricter prompt with
+    # exclusion rules; "faceless" keeps the upstream prompt unchanged so
+    # Mode 5 and legacy callers see identical behavior.
+    if mode == "short":
+        prompt = f"""
+# Role: Product-Video Search Terms Generator
+
+## Goal:
+Generate {amount} concrete, product-centric search terms for stock videos
+that will be used as B-roll behind a short marketing ad.
+
+## Output format:
+A JSON array of {amount} strings. No explanation, no code fences, just the array.
+
+## Rules:
+1. Every term MUST describe a concrete PRODUCT OR SCENE — e.g.
+   "wireless headphones close up", "coffee brewing in glass", "ceramic mug on table".
+2. NEVER return abstract traits or person descriptors. Forbidden examples:
+   "beautiful lady", "stunning view", "seductive display", "luxury lifestyle",
+   "elegant atmosphere", "professional look", "cinematic shot".
+3. Anchor AT LEAST 3 of the {amount} terms to the main product or object being
+   advertised. Re-use the product noun across multiple terms with different
+   angles/contexts (close-up, in-use, detail, on-surface, in-hand).
+4. Prefer concrete nouns over adjectives. 2–4 words per term.
+5. English only.
+
+## Good examples for "a ceramic pour-over coffee dripper":
+["ceramic coffee dripper", "pour over brewing", "coffee dripping close up",
+ "hands pouring kettle", "morning coffee ritual"]
+
+## Bad examples — DO NOT produce:
+["beautiful morning", "luxury kitchen", "elegant lifestyle", "stunning aroma",
+ "cozy atmosphere"]
+
+## Context:
+### Video Subject
+{video_subject}
+
+### Video Script
+{video_script}
+""".strip()
+    else:
+        prompt = f"""
 # Role: Video Search Terms Generator
 
 ## Goals:
@@ -519,6 +586,66 @@ Please note that you must use English for generating video search terms; Chinese
 
     logger.success(f"completed: \n{search_terms}")
     return search_terms
+
+
+def generate_marketing_script(
+    product_info: str,
+    duration_seconds: int = 20,
+    language: str = "en",
+) -> str:
+    """Hook-body-CTA marketing script for a short vertical ad.
+
+    Part of VisualAI Step 1 (Mode 2). Sized to ``duration_seconds`` at a
+    conservative ~2.5 words/second delivery rate. Keeps ``generate_script``
+    unchanged so existing faceless-channel flows are untouched.
+    """
+    target_words = max(8, int(duration_seconds * 2.5))
+    prompt = f"""
+# Role: Short-form Marketing Copywriter
+
+## Goal:
+Write a {duration_seconds}-second vertical ad script for the product below using a
+Hook → Body → Call-to-Action structure.
+
+## Target delivery:
+- Approximately {target_words} words total (~2.5 words/second at natural pacing).
+- Plain speakable prose only. No stage directions, no speaker labels, no markdown.
+- One single block of text, no blank lines.
+
+## Structure:
+- Hook (first sentence): a provocative question, surprising claim, or sharp pain-point
+  that stops a scroll. No "welcome" openers.
+- Body (middle 60%): one concrete benefit and one proof point. Direct-response tone.
+- CTA (final sentence): a single clear action — try, visit, tap, grab.
+
+## Constraints:
+1. Return only the raw script text.
+2. No hashtags, no emoji, no parentheticals.
+3. Use the language code `{language}` for the output.
+4. Never mention this prompt or the script structure.
+
+# Product info:
+{product_info}
+""".strip()
+
+    logger.info(f"marketing script for: {product_info!r} @ {duration_seconds}s")
+    for i in range(_max_retries):
+        try:
+            response = _generate_response(prompt=prompt)
+            if response:
+                cleaned = response.replace("*", "").replace("#", "").strip()
+                if "当日额度已消耗完" in cleaned:
+                    raise ValueError(cleaned)
+                if cleaned:
+                    logger.success(f"completed marketing script: \n{cleaned}")
+                    return cleaned
+        except Exception as e:
+            logger.error(f"failed to generate marketing script: {e}")
+        if i < _max_retries:
+            logger.warning(
+                f"failed to generate marketing script, trying again... {i + 1}"
+            )
+    return ""
 
 
 if __name__ == "__main__":

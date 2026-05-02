@@ -1,6 +1,6 @@
 import warnings
 from enum import Enum
-from typing import Any, List, Optional, Union
+from typing import Any, List, Literal, Optional, Union
 
 import pydantic
 from pydantic import BaseModel
@@ -73,8 +73,16 @@ class VideoParams(BaseModel):
     video_subject: str
     video_script: str = ""  # Script used to generate the video
     video_terms: Optional[str | list] = None  # Keywords used to generate the video
-    video_aspect: Optional[VideoAspect] = VideoAspect.portrait.value
-    video_concat_mode: Optional[VideoConcatMode] = VideoConcatMode.random.value
+    # VisualAI Agent Mode. Optional; defaults to upstream behavior (faceless).
+    # "short" routes through app.services.llm.generate_marketing_script for
+    # hook-body-CTA copy. Added for Step 1 of the 5-step build plan.
+    mode: Optional[Literal["faceless", "short"]] = "faceless"
+    # Enum defaults use the enum INSTANCE (not `.value`) so Pydantic holds
+    # an Enum at runtime. Using the raw string default can cause downstream
+    # `.value` calls in services/material.py + services/video.py to blow up
+    # with AttributeError on StrEnum mixins under certain Pydantic versions.
+    video_aspect: Optional[VideoAspect] = VideoAspect.portrait
+    video_concat_mode: Optional[VideoConcatMode] = VideoConcatMode.random
     video_transition_mode: Optional[VideoTransitionMode] = None
     video_clip_duration: Optional[int] = 5
     video_count: Optional[int] = 1
