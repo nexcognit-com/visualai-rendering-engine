@@ -36,10 +36,19 @@ Step 1 touches ONE file outside the fork-surface set (tracked as debt row #5 abo
 
 Once all four rows are struck through, Step 1's debt is fully retired. At that point `STEP1_DEBT.md` SHOULD be deleted in the same commit that retires the final debt, with the commit message citing all four repayment references.
 
+## Deferred-by-design (NOT principle relaxations)
+
+Some functionality is intentionally absent from Step 1 not because we're cutting corners, but because the prerequisites don't exist yet. These are NOT principle relaxations — the constitution doesn't require them at Step 1 — but they ARE durable architectural commitments worth recording so future agents don't get confused about whether they should be built.
+
+| Concern | Why absent at Step 1 | Where it lands | Spec |
+|---|---|---|---|
+| **Credit gating + token metering on Mode 2 renders** | Step 1 is single-user, no auth, no Layer 2. Without an authenticated customer record, there is no balance to gate against. The constitution-aligned home for credit logic is Layer 1 (frontend), but it requires a real `crm_member_id` from the Wix CRM webhook flow — VisualAI is pre-customer today. | **Step 4** (or earlier as a Step 1.5 increment when the first real customer signs up) | [Spec 008 — NexCognit Credit Gating Integration](specs/008-nexcognit-credit-gating/spec.md) (paused; resumes when any of three Resume conditions met) |
+
 ## Cross-references
 
 - [VisualAI by NexCognit — Master Product Specification](VisualAI%20by%20NexCognit%20%E2%80%94%20Master%20Product%20Specification.md)
 - [Constitution v1.0.2](.specify/memory/constitution.md)
 - [Spec 001 — UI Style](specs/001-nexcognit-ui-style/spec.md) (frontend design system consumed by Step 1)
 - [Spec 002 — Video Duration / Variations / Preview Gate](specs/002-video-duration-variations/spec.md) (preview-gate itself is Step 2+; Step 1 ships single-variation only)
+- [Spec 008 — NexCognit Credit Gating Integration](specs/008-nexcognit-credit-gating/spec.md) (deferred-by-design; lands in Step 4 unless a real customer arrives sooner)
 - [5-step build plan](/Users/amraeid/.claude/plans/can-you-confirm-that-dapper-emerson.md)
