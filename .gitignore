@@ -31,5 +31,7 @@ venv/
 CLAUDE.md
 debug/
 debug_*.py
-test_*.py
+# Anchor to repo root only — `test/**/test_*.py` (the actual pytest suite)
+# must remain trackable.
+/test_*.py
 streamlit.log
