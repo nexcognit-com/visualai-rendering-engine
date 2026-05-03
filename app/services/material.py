@@ -218,16 +218,21 @@ def download_videos(
     max_clip_duration: int = 5,
 ) -> List[str]:
     # ============================================================================
-    # USER POLICY (set by Amr 2026-05-03 — see chat log):
+    # USER POLICY (set by Amr 2026-05-03, refined to MIXED — see chat log):
     #
     #   1. Pexels is EXCLUDED. Pexels' relevance ranking returned random clips
     #      (American flags, snowflakes, hand-on-keyboard) for niche tech queries
-    #      like "AI bounding boxes overlay". Pixabay-only is the new default.
-    #   2. URL detected in topic → 100% NanoBanana (FAL.ai) generation. URLs
-    #      typically signal product-specific intent ("show MY product"); only
-    #      AI generation can render arbitrary on-prompt visuals.
-    #   3. No URL → Pixabay only. Stock B-roll for general topics like
-    #      "Mediterranean diet" / "productivity tips".
+    #      like "AI bounding boxes overlay". Never call search_videos_pexels
+    #      from the auto path.
+    #   2. URL detected in topic → MIXED Pixabay video + NanoBanana stills,
+    #      interleaved (P-N-P-N-...). This gives the video real motion from
+    #      Pixabay clips AND on-prompt AI hero shots from NanoBanana, without
+    #      going all-AI. URLs signal product-specific intent so we want some
+    #      AI-generated imagery in the mix; but real motion is essential to
+    #      avoid the "slideshow" feel.
+    #   3. No URL → Pixabay only. Real-motion stock B-roll for general topics
+    #      like "Mediterranean diet" / "productivity tips" where Pixabay's
+    #      inventory is solid.
     #
     # To change this policy: edit the dispatch block immediately after this
     # comment. The Pexels code path (search_videos_pexels) is intentionally
@@ -285,8 +290,8 @@ def download_videos(
         )
 
     # === USER-POLICY DISPATCH (see comment block at top of download_videos) ===
-    # Branch A: subject contains a URL → 100% NanoBanana (URL signals product
-    #           specificity that stock can't satisfy)
+    # Branch A: subject contains a URL → MIXED Pixabay video + NanoBanana stills
+    #           (interleaved P-N-P-N for real motion + on-prompt hero shots)
     # Branch B: no URL → Pixabay only (Pexels excluded — see policy comment)
     #
     # We detect URLs from `script.json#params.video_subject` (written by
@@ -299,26 +304,27 @@ def download_videos(
     from app.services import nanobanana as _nanobanana
     if has_url and _nanobanana.is_enabled():
         logger.info(
-            "material: URL detected in topic; routing 100% to NanoBanana "
-            "(FAL.ai) per user policy. Pixabay/Pexels skipped."
+            "material: URL detected in topic; routing to MIXED Pixabay+NanoBanana "
+            "(real-motion stock interleaved with on-prompt AI hero shots)."
         )
-        ai_clip_paths = _generate_full_video_via_nanobanana(
+        mixed_paths = _mix_pixabay_and_nanobanana(
             task_id=task_id,
             search_terms=search_terms,
             audio_duration=audio_duration,
             max_clip_duration=max_clip_duration,
+            video_aspect=video_aspect,
         )
-        if ai_clip_paths:
+        if mixed_paths:
             _write_asset_audit(task_id, {
                 "visuals_mode": "auto",
                 "auto_pexels_used": False,
-                "nanobanana_clip_count": len(ai_clip_paths),
-                "dispatch_reason": "url_detected",
+                "mixed_clip_count": len(mixed_paths),
+                "dispatch_reason": "url_detected_mixed",
                 "model_asset": None,
                 "product_assets": [],
             })
-            return ai_clip_paths
-        logger.warning("nanobanana URL-path returned 0 clips; falling through to Pixabay")
+            return mixed_paths
+        logger.warning("mixed Pixabay+NanoBanana returned 0 clips; falling through to Pixabay-only")
 
     valid_video_items = []
     valid_video_urls = []
@@ -440,6 +446,138 @@ def _read_video_subject_from_script_json(task_id: str) -> str:
     except (OSError, json.JSONDecodeError, AttributeError) as exc:
         logger.warning(f"could not read video_subject from script.json: {exc}")
         return ""
+
+
+def _mix_pixabay_and_nanobanana(
+    *,
+    task_id: str,
+    search_terms: List[str],
+    audio_duration: float,
+    max_clip_duration: int,
+    video_aspect: VideoAspect,
+) -> List[str]:
+    """Spec 015 — MIXED dispatch for URL-detected topics: combine real-motion
+    Pixabay stock clips with on-prompt NanoBanana hero stills (Ken-Burns'd),
+    interleaved as P-N-P-N-... so the playback alternates between real
+    footage and AI-generated product-specific shots.
+
+    Sizing:
+      n_total = ceil(audio_duration / max_clip_duration), capped at 12
+      target  = ~50% Pixabay + ~50% NanoBanana (rounded toward Pixabay
+                because real-motion clips are higher value per slot)
+
+    Cost: NanoBanana half × $0.04 ≈ $0.20-0.24 per video. Pixabay free.
+
+    Falls back gracefully:
+      - If Pixabay returns < target_pixabay clips, fill remaining slots
+        with NanoBanana so n_total is still met.
+      - If NanoBanana fails (FAL down etc), pad with extra Pixabay clips.
+      - Returns whatever was successfully fetched/generated; never empty
+        unless both providers fail.
+    """
+    from app.services import nanobanana
+
+    clip_duration = float(max_clip_duration)
+    n_total = max(4, int(round(audio_duration / clip_duration)))
+    n_total = min(n_total, 12)
+    target_pixabay = (n_total + 1) // 2  # ceil half — favour real motion
+    target_nanobanana = n_total - target_pixabay
+    logger.info(
+        f"mix: targeting {n_total} clips ({target_pixabay} pixabay + "
+        f"{target_nanobanana} nanobanana, ~${target_nanobanana * 0.04:.2f} AI cost)"
+    )
+
+    # --- Pixabay fetch (round-robin across terms, dedupe by URL) ---
+    pixabay_items: list = []
+    seen_urls: set = set()
+    for term in search_terms:
+        if len(pixabay_items) >= target_pixabay * 2:  # over-fetch for choice
+            break
+        items = search_videos_pixabay(
+            search_term=term,
+            minimum_duration=max_clip_duration,
+            video_aspect=video_aspect,
+        )
+        for it in items:
+            if it.url and it.url not in seen_urls:
+                seen_urls.add(it.url)
+                pixabay_items.append(it)
+                if len(pixabay_items) >= target_pixabay * 2:
+                    break
+    logger.info(f"mix: pixabay over-fetched {len(pixabay_items)} (target {target_pixabay})")
+
+    # Download top target_pixabay
+    material_directory = config.app.get("material_directory", "").strip()
+    if material_directory == "task":
+        material_directory = utils.task_dir(task_id)
+    elif material_directory and not os.path.isdir(material_directory):
+        material_directory = ""
+
+    pixabay_paths: List[str] = []
+    for it in pixabay_items:
+        if len(pixabay_paths) >= target_pixabay:
+            break
+        try:
+            saved = save_video(video_url=it.url, save_dir=material_directory)
+            if saved:
+                pixabay_paths.append(saved)
+        except Exception as exc:
+            logger.warning(f"pixabay download failed for {it.url[:60]}: {exc}")
+    logger.info(f"mix: pixabay downloaded {len(pixabay_paths)}/{target_pixabay}")
+
+    # If pixabay short, top up nanobanana target
+    pixabay_short = target_pixabay - len(pixabay_paths)
+    if pixabay_short > 0:
+        target_nanobanana += pixabay_short
+        target_nanobanana = min(target_nanobanana, 12)  # respect overall cost cap
+        logger.info(f"mix: pixabay short by {pixabay_short}; bumping nanobanana to {target_nanobanana}")
+
+    # --- NanoBanana generation (round-robin across terms) ---
+    nb_dir = path.join(utils.task_dir(task_id), "nanobanana")
+    os.makedirs(nb_dir, exist_ok=True)
+    nb_paths: List[str] = []
+    base_aesthetic = (
+        "Photorealistic, professional product photography, vertical 9:16 "
+        "composition, cinematic lighting, sharp focus, high detail. Subject: "
+    )
+    for i in range(target_nanobanana):
+        term = search_terms[i % len(search_terms)] if search_terms else "modern technology"
+        prompt = base_aesthetic + term
+        logger.info(f"mix.nanobanana[{i + 1}/{target_nanobanana}]: {term!r}")
+        url = nanobanana.generate_image(prompt)
+        if not url:
+            continue
+        jpg_path = path.join(nb_dir, f"img-{i + 1}.jpg")
+        if not nanobanana.download_image(url, jpg_path):
+            continue
+        clip_path = path.join(nb_dir, f"clip-{i + 1}.mp4")
+        try:
+            _make_kenburns_clip(jpg_path, clip_duration, clip_path, _compute_seed(jpg_path))
+            nb_paths.append(clip_path)
+        except Exception as exc:
+            logger.warning(f"ken-burns failed for nanobanana mix image {i + 1}: {exc}")
+
+    # --- Interleave P-N-P-N-... ---
+    interleaved: List[str] = []
+    p_iter = iter(pixabay_paths)
+    n_iter = iter(nb_paths)
+    p_done = n_done = False
+    while not (p_done and n_done):
+        try:
+            interleaved.append(next(p_iter))
+        except StopIteration:
+            p_done = True
+        try:
+            interleaved.append(next(n_iter))
+        except StopIteration:
+            n_done = True
+
+    logger.success(
+        f"mix produced {len(interleaved)} clips: "
+        f"{len(pixabay_paths)} pixabay + {len(nb_paths)} nanobanana "
+        f"(${len(nb_paths) * 0.04:.2f} AI cost)"
+    )
+    return interleaved
 
 
 def _generate_full_video_via_nanobanana(
