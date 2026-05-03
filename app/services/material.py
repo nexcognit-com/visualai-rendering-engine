@@ -223,6 +223,17 @@ def download_videos(
     # clips built from user-uploaded images. The sidecar pattern preserves
     # task.py's existing call signature (debt #5 line count unchanged).
     sidecar = _read_visuals_sidecar(task_id)
+
+    # Spec 015 / Step 3 (FR-022): Layer 2 may pre-mint pre-signed URLs into
+    # the sidecar instead of letting Layer 3 call Pexels/Pixabay directly.
+    # When pre_signed_clip_urls is non-null + non-empty, fetch from those
+    # URLs. (Layer 2's URL-population path lands in Step 3.5; today the field
+    # is null for Mode 2 + Mode 5, which fall through to existing logic.)
+    if sidecar:
+        pre_signed = sidecar.get("pre_signed_clip_urls")
+        if pre_signed:
+            return _download_from_pre_signed_urls(task_id, pre_signed)
+
     if sidecar and sidecar.get("visuals_mode") == "user_uploaded":
         return _build_clips_from_uploads(
             task_id=task_id,
@@ -241,6 +252,19 @@ def download_videos(
             max_clip_duration=max_clip_duration,
             setting_tag=sidecar.get("setting_tag") or "general",
             setting_queries=sidecar.get("stock_queries") or [],
+        )
+
+    # Spec 015 / Step 3 (FR-023, soft form): warn when a non-faceless mode
+    # hits the direct Pexels/Pixabay call path. Mode 2 Auto + hybrid retain
+    # this path as residual debt #3 awaiting Step 3.5; Mode 5 is the
+    # constitution Principle IV permitted exception. Step 3.5 flips the
+    # warning to a hard RuntimeError once Layer 2 owns the stock-fetch flow.
+    sidecar_mode = (sidecar or {}).get("mode") if sidecar else None
+    if sidecar_mode and sidecar_mode != "faceless":
+        logger.warning(
+            f"material.principle_iv_soft_warning: mode={sidecar_mode!r} hitting "
+            "direct Pexels/Pixabay path. Constitution Principle IV will require "
+            "this to route through Layer 2 pre-signed URLs in Step 3.5."
         )
 
     valid_video_items = []
@@ -316,6 +340,57 @@ def download_videos(
 
 _KENBURNS_FPS = 30
 _KENBURNS_MIN_DURATION = 2.0  # FR-014 / FR-016 floor
+
+
+def _download_from_pre_signed_urls(task_id: str, urls: List[str]) -> List[str]:
+    """Spec 015 (FR-022): fetch each pre-signed URL into the task's clips dir.
+
+    Plain HTTP GET — Layer 3 does NOT verify the HMAC signature; that's
+    Layer 2's responsibility at the ``/_signed/`` mount. 30s per-URL timeout,
+    one retry on 5xx with 2s backoff.
+    """
+    out_dir = path.join(utils.task_dir(task_id), "clips")
+    os.makedirs(out_dir, exist_ok=True)
+    out_paths: List[str] = []
+    for i, url in enumerate(urls, start=1):
+        ext = ".mp4"
+        if "." in url.rsplit("/", 1)[-1].split("?", 1)[0]:
+            ext = "." + url.rsplit(".", 1)[-1].split("?", 1)[0]
+        out_path = path.join(out_dir, f"clip-{i}{ext}")
+        last_exc: Optional[Exception] = None
+        for attempt in range(2):
+            try:
+                with requests.get(url, stream=True, timeout=30) as r:
+                    if r.status_code >= 500 and attempt == 0:
+                        import time as _t
+                        _t.sleep(2)
+                        continue
+                    r.raise_for_status()
+                    with open(out_path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                out_paths.append(out_path)
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001 — broad catch is intentional
+                last_exc = exc
+                if attempt == 0:
+                    import time as _t
+                    _t.sleep(2)
+                    continue
+        if last_exc is not None:
+            logger.error(f"material.fetch_failed url={url!r}: {last_exc}")
+            raise RuntimeError(f"material.fetch_failed: {url}") from last_exc
+    logger.success(f"downloaded {len(out_paths)} clips from pre-signed URLs")
+    _write_asset_audit(task_id, {
+        "visuals_mode": "auto",
+        "auto_pexels_used": False,
+        "pre_signed_used": True,
+        "pre_signed_clip_count": len(out_paths),
+        "model_asset": None,
+        "product_assets": [],
+    })
+    return out_paths
 
 
 def _read_visuals_sidecar(task_id: str) -> Optional[dict]:

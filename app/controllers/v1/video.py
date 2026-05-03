@@ -110,6 +110,15 @@ def create_video(
     claims: dict = Depends(jwt_required),
 ):
     apply_tenant_context_to_body(body, claims)
+    # Spec 015: Mode 1 (product_shoot) is image-only and lives entirely in
+    # Layer 2 + Layer 2.5 — it never produces a render task in Layer 3.
+    # Reject early before task_manager queues anything.
+    if getattr(body, "mode", None) == "product_shoot":
+        raise HttpException(
+            task_id="",
+            status_code=422,
+            message="unsupported_mode_for_render: product_shoot is a Layer 2 image-generation mode",
+        )
     return create_task(request, body, stop_at="video")
 
 
@@ -197,9 +206,14 @@ def _maybe_write_visuals_sidecar(task_id: str, body, request_id: str) -> None:
 
     sidecar_path = os.path.join(task_dir, "visuals.json")
     payload: dict = {
+        "mode": getattr(body, "mode", "short"),
         "visuals_mode": visuals_mode,
         "uploaded_model_path": model_path,
         "uploaded_product_paths": product_paths,
+        # Spec 015 / Step 3 (FR-022): Layer 2 will populate this in Step 3.5
+        # when it owns the stock-fetch flow for Mode 2 Auto. None today =
+        # Layer 3 falls through to its existing dispatch.
+        "pre_signed_clip_urls": None,
     }
 
     if visuals_mode == "hybrid":

@@ -1,6 +1,17 @@
 <!--
 Sync Impact Report
 ==================
+Version: 1.1.0 (MINOR — 2026-05-03)
+  - Spec 015 / Step 3 lands the `app/services/modes/` registry as a real Python
+    package; widened Principle II's documented fork-surface set to six items
+    (added `app/services/modes/`).
+  - Mode 1 (Product Shoot Generator) and Mode 5 (Faceless Channel Automation)
+    transition from "reserved" to "actively implemented" — Mode 5 lives in the
+    Layer 3 registry as `modes/faceless.py`; Mode 1's pipeline lives entirely
+    in Layer 2 + Layer 2.5 (intentionally NOT in Layer 3's registry).
+  - Modes 3 + 4 remain reserved for Step 4.
+  - No principle redefined or removed. Templates: no updates required.
+
 Version: 1.0.2 (PATCH — 2026-04-21)
   - Clarified §Technology Constraints → Database: application code MUST NOT
     embed tenant/credit/user schema or ORM; Neon DDL under ops/neon/migrations/
@@ -58,9 +69,15 @@ scalable per the 5-Layer architecture in §4 of the VisualAI Master Spec.
 ### II. Surgical Fork Discipline
 
 Modifications to the upstream MoneyPrinterTurbo codebase MUST be confined to
-the five surfaces called out in §5 of the Master Spec:
-`app/services/material.py`, `app/services/llm.py`, `app/services/voice.py`,
-`app/models/schema.py`, and the video controllers under `app/controllers/`.
+the six surfaces listed below:
+
+- `app/services/material.py`
+- `app/services/llm.py`
+- `app/services/voice.py`
+- `app/services/modes/` (Mode registry, formalised in v1.1.0 — spec 015 / Step 3)
+- `app/models/schema.py`
+- the video controllers under `app/controllers/`
+
 Core FFmpeg/MoviePy assembly code and shared utilities MUST remain
 upstream-compatible so periodic rebases onto `harry0703/MoneyPrinterTurbo`
 stay low-conflict. Changes outside these surfaces require explicit
@@ -181,4 +198,4 @@ Runtime guidance lives in `README.md`, `CLAUDE.md`, and the VisualAI
 Master Spec. Those documents MUST be updated in the same PR when a
 principle changes their stated behavior.
 
-**Version**: 1.0.2 | **Ratified**: 2026-04-19 | **Last Amended**: 2026-04-21
+**Version**: 1.1.0 | **Ratified**: 2026-04-19 | **Last Amended**: 2026-05-03

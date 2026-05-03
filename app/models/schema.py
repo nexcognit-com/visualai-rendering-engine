@@ -73,6 +73,13 @@ class VideoParams(BaseModel):
 
     video_subject: str
     video_script: str = ""  # Script used to generate the video
+    # Spec 015: Agent Mode dispatch. Default "short" preserves Step-1/2
+    # behavior (Mode 2 — Short Marketing Video). "faceless" routes Mode 5
+    # (topic-driven generic stock — Pexels permitted). "product_shoot" is
+    # rejected at the controller boundary (Mode 1 lives in Layer 2 + 2.5,
+    # never reaches Layer 3) — the literal includes it so the schema covers
+    # all five-mode-set members ever seen on the API.
+    mode: Literal["short", "faceless", "product_shoot"] = "short"
     # Spec 013: explicit script-handling mode. None = legacy behavior:
     # empty video_script → auto path; non-empty → verbatim. "auto"/"verbatim"
     # are explicit flavors of those two; "polish" sends the user-typed text

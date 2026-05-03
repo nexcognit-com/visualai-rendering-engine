@@ -8,7 +8,7 @@ from loguru import logger
 from app.config import config
 from app.models import const
 from app.models.schema import VideoConcatMode, VideoParams
-from app.services import llm, material, subtitle, video, voice, upload_post
+from app.services import llm, material, modes, subtitle, video, voice, upload_post
 from app.services import state as sm
 from app.utils import utils
 
@@ -73,15 +73,23 @@ def generate_script(task_id, params):
     elif script_mode == "verbatim" or (script_mode is None and video_script):
         logger.debug(f"video script: \n{video_script}")
 
-    # Auto branch (explicit OR legacy empty). The `mode` field is added to
-    # VideoParams in a later spec; on this branch we omit it so generate_script
-    # uses its default (faceless) behavior — which is fine for legacy callers.
+    # Auto branch (explicit OR legacy empty). Spec 015 / Step 3: dispatch via
+    # the modes registry so per-mode prompt overrides land cleanly. Falls back
+    # to llm.generate_script for unknown / legacy modes.
     else:
-        video_script = llm.generate_script(
-            video_subject=params.video_subject,
-            language=params.video_language,
-            paragraph_number=params.paragraph_number,
-        )
+        try:
+            mode_impl = modes.pick(getattr(params, "mode", None) or "short")
+            video_script = mode_impl.generate_script(params)
+        except KeyError:
+            logger.warning(
+                f"unknown mode {getattr(params, 'mode', None)!r}; "
+                "falling back to default llm.generate_script"
+            )
+            video_script = llm.generate_script(
+                video_subject=params.video_subject,
+                language=params.video_language,
+                paragraph_number=params.paragraph_number,
+            )
 
     if not video_script:
         sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
@@ -95,9 +103,21 @@ def generate_terms(task_id, params, video_script):
     logger.info("\n\n## generating video terms")
     video_terms = params.video_terms
     if not video_terms:
-        video_terms = llm.generate_terms(
-            video_subject=params.video_subject, video_script=video_script, amount=5
-        )
+        # Spec 015 / Step 3: dispatch via the modes registry. Falls back to
+        # the generic llm.generate_terms for unknown modes (forward-compat).
+        try:
+            mode_impl = modes.pick(getattr(params, "mode", None) or "short")
+            video_terms = mode_impl.generate_terms(params, video_script)
+        except KeyError:
+            logger.warning(
+                f"unknown mode {getattr(params, 'mode', None)!r}; "
+                "falling back to default llm.generate_terms"
+            )
+            video_terms = llm.generate_terms(
+                video_subject=params.video_subject,
+                video_script=video_script,
+                amount=5,
+            )
     else:
         if isinstance(video_terms, str):
             video_terms = [term.strip() for term in re.split(r"[,，]", video_terms)]
