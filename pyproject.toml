@@ -32,6 +32,7 @@ dependencies = [
     "socksio==1.0.0",
     "pydub==0.25.1",
     "PyJWT>=2.8",
+    "ddgs==9.14.1",
 ]
 
 [tool.hatch.build.targets.wheel]

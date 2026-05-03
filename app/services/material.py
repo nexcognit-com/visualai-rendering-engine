@@ -270,23 +270,44 @@ def download_videos(
     valid_video_items = []
     valid_video_urls = []
     found_duration = 0.0
-    search_videos = search_videos_pexels
-    if source == "pixabay":
-        search_videos = search_videos_pixabay
 
-    for search_term in search_terms:
-        video_items = search_videos(
-            search_term=search_term,
-            minimum_duration=max_clip_duration,
-            video_aspect=video_aspect,
-        )
-        logger.info(f"found {len(video_items)} videos for '{search_term}'")
-
-        for item in video_items:
-            if item.url not in valid_video_urls:
-                valid_video_items.append(item)
-                valid_video_urls.append(item.url)
-                found_duration += item.duration
+    # Spec 015 Mode-5 quality: when caller doesn't pin a single provider
+    # (source == 'pexels' default), use Pixabay-first dual-source — denser
+    # business / industrial / professional inventory than Pexels alone.
+    # Single-provider override (source == 'pixabay' or 'pexels' explicit
+    # pin via params.video_source) preserves legacy behaviour.
+    explicit_single_source = source in ("pixabay",) or (
+        source == "pexels" and config.app.get("force_single_source_pexels", False)
+    )
+    if explicit_single_source:
+        search_videos = search_videos_pixabay if source == "pixabay" else search_videos_pexels
+        for search_term in search_terms:
+            video_items = search_videos(
+                search_term=search_term,
+                minimum_duration=max_clip_duration,
+                video_aspect=video_aspect,
+            )
+            logger.info(f"found {len(video_items)} videos for '{search_term}' (single-source: {source})")
+            for item in video_items:
+                if item.url not in valid_video_urls:
+                    valid_video_items.append(item)
+                    valid_video_urls.append(item.url)
+                    found_duration += item.duration
+    else:
+        # Dual-source: Pixabay first (denser), Pexels fills gaps. Round-robin
+        # across queries to maximise topical coverage when many terms are given.
+        for search_term in search_terms:
+            items = _search_stock_dual_source(
+                query=search_term,
+                video_aspect=video_aspect,
+                max_clip_duration=max_clip_duration,
+            )
+            logger.info(f"found {len(items)} videos for '{search_term}' (dual-source pixabay+pexels)")
+            for item in items:
+                if item.url not in valid_video_urls:
+                    valid_video_items.append(item)
+                    valid_video_urls.append(item.url)
+                    found_duration += item.duration
 
     logger.info(
         f"found total videos: {len(valid_video_items)}, required duration: {audio_duration} seconds, found duration: {found_duration} seconds"

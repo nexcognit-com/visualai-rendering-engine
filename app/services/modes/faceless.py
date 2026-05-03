@@ -19,11 +19,22 @@ default_aspect_ratio: VideoAspect = VideoAspect.portrait
 
 
 def generate_script(params: VideoParams) -> str:
-    """Topic-driven script via the standard generic LLM prompt."""
-    return llm.generate_script(
-        video_subject=params.video_subject,
-        language=params.video_language or "",
-        paragraph_number=params.paragraph_number or 1,
+    """Topic-driven script with **research-then-write** grounding.
+
+    Spec 015 Mode-5 quality: pull 3-5 short factual snippets from a web
+    search before generation so the LLM doesn't have to rely on its
+    training-time knowledge alone (especially for time-sensitive topics
+    like "the science of waking up at 5am" where studies cited may be
+    outdated). DDGS lookup is best-effort: on failure, falls back to
+    ungrounded generation so the wizard always returns a video.
+    """
+    topic = (params.video_subject or "").strip()
+    facts = llm.research_topic(topic) if topic else []
+    return llm.generate_faceless_script_grounded(
+        topic=topic,
+        facts=facts,
+        duration_seconds=60,
+        language=params.video_language or "en",
     )
 
 

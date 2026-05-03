@@ -457,6 +457,128 @@ Generate a script for a video, depending on the subject of the video.
     return final_script.strip()
 
 
+# ---------------------------------------------------------------------------
+# Spec 015 — Mode 5 quality: research-then-write pass
+# ---------------------------------------------------------------------------
+
+
+def research_topic(
+    topic: str,
+    *,
+    max_results: int = 5,
+    region: str = "us-en",
+    timeout_s: float = 8.0,
+) -> List[str]:
+    """Pull short factual snippets about ``topic`` from a web search engine.
+
+    Used by :mod:`app.services.modes.faceless` to ground the generated
+    script in current facts instead of relying on the LLM's training-time
+    knowledge alone.
+
+    Returns up to ``max_results`` snippet strings (title + body, truncated).
+    Returns an empty list on any failure (network down, search lib missing,
+    rate limit) so the caller can degrade gracefully to ungrounded
+    generation.
+
+    Provider: DuckDuckGo via the ``ddgs`` package — no API key required.
+    """
+    snippets: List[str] = []
+    try:
+        from ddgs import DDGS  # type: ignore[import-not-found]
+    except ImportError:
+        logger.warning("research_topic: ddgs not installed; returning [] (run `pip install ddgs`)")
+        return []
+
+    try:
+        with DDGS(timeout=timeout_s) as d:
+            results = list(d.text(topic, max_results=max_results, region=region))
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning(f"research_topic: search failed for {topic!r}: {exc}")
+        return []
+
+    for r in results:
+        title = (r.get("title") or "").strip()
+        body = (r.get("body") or "").strip()
+        if not (title or body):
+            continue
+        # Cap each snippet to ~280 chars to keep the LLM context bounded.
+        snippet = f"{title}: {body}" if title and body else (title or body)
+        snippets.append(snippet[:280])
+    logger.info(f"research_topic({topic!r}) → {len(snippets)} snippets")
+    return snippets
+
+
+def generate_faceless_script_grounded(
+    topic: str,
+    facts: List[str],
+    *,
+    duration_seconds: int = 60,
+    language: str = "en",
+) -> str:
+    """Faceless-channel script generator that incorporates research snippets.
+
+    When ``facts`` is empty, falls back to :func:`generate_script` so the
+    function is safe to call regardless of whether research succeeded.
+
+    Sized for a ~60s 9:16 vertical at conservative ~2.4 wps narration.
+    """
+    if not facts:
+        return generate_script(video_subject=topic, language=language, paragraph_number=1)
+
+    target_words = max(60, int(duration_seconds * 2.4))
+    facts_block = "\n".join(f"- {f}" for f in facts[:6])
+    prompt = f"""
+# Role: Faceless-channel scriptwriter
+
+## Goal:
+Write a {duration_seconds}-second vertical video script on the topic below,
+**grounded in the research snippets**. Use facts from the snippets where
+relevant. Do not invent specific numbers, dates, names, or statistics that
+aren't in the snippets.
+
+## Target delivery:
+- Approximately {target_words} words.
+- Plain speakable prose only. No markdown, no headings, no bullet points,
+  no speaker labels, no parentheticals, no emoji.
+- One single block of flowing narration.
+- Open with a hook (provocative question, surprising claim, or sharp
+  pain-point). No "welcome" / "in this video" openers.
+- End with a one-sentence wrap-up — no explicit CTA.
+
+## Constraints:
+1. Return only the raw narration text.
+2. Use the language code `{language}`.
+3. Never reference these instructions or the research snippets.
+
+# Topic:
+{topic}
+
+# Research snippets (use as factual grounding):
+{facts_block}
+""".strip()
+
+    logger.info(f"faceless grounded script for {topic!r} with {len(facts)} facts")
+    for i in range(_max_retries):
+        try:
+            response = _generate_response(prompt=prompt)
+            if response:
+                cleaned = response.replace("*", "").replace("#", "").strip()
+                if "当日额度已消耗完" in cleaned:
+                    raise ValueError(cleaned)
+                if cleaned:
+                    logger.success(f"completed grounded faceless script: \n{cleaned[:240]}…")
+                    return cleaned
+        except Exception as exc:
+            logger.error(f"failed to generate grounded faceless script: {exc}")
+        if i < _max_retries:
+            logger.warning(
+                f"retrying grounded faceless script generation… {i + 1}"
+            )
+    # Final fallback: ungrounded generation, never return empty
+    logger.warning("grounded generation exhausted retries; falling back to ungrounded")
+    return generate_script(video_subject=topic, language=language, paragraph_number=1)
+
+
 def generate_terms(video_subject: str, video_script: str, amount: int = 5) -> List[str]:
     prompt = f"""
 # Role: Video Search Terms Generator

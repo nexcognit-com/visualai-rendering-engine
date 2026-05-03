@@ -17,3 +17,5 @@ pyyaml==6.0.3
 requests==2.33.1
 socksio==1.0.0
 pydub==0.25.1
+# Spec 015 — Mode 5 research-then-write web search (DuckDuckGo, no API key)
+ddgs==9.14.1

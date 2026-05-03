@@ -21,9 +21,11 @@ def params() -> VideoParams:
 
 
 def test_face1_generate_script_returns_string(params: VideoParams) -> None:
-    """generate_script delegates to llm.generate_script. Mock the LLM to
-    keep the test deterministic + free-of-network."""
-    with patch("app.services.modes.faceless.llm.generate_script", return_value="topic-script-stub"):
+    """generate_script orchestrates research_topic + generate_faceless_script_grounded.
+    Mock both to keep the test deterministic + free-of-network."""
+    with patch("app.services.modes.faceless.llm.research_topic", return_value=[]), \
+         patch("app.services.modes.faceless.llm.generate_faceless_script_grounded",
+               return_value="topic-script-stub"):
         out = faceless.generate_script(params)
     assert out == "topic-script-stub"
 
