@@ -79,7 +79,10 @@ class VideoParams(BaseModel):
     # rejected at the controller boundary (Mode 1 lives in Layer 2 + 2.5,
     # never reaches Layer 3) — the literal includes it so the schema covers
     # all five-mode-set members ever seen on the API.
-    mode: Literal["short", "faceless", "product_shoot"] = "short"
+    # Spec 016 widens the literal with "long" — Mode 3 Long-Form Video
+    # (16:9 YouTube, 2-5 min). Layer 2 builds the script + B-roll list
+    # upstream; Layer 3 assembles per the long_form mode registry entry.
+    mode: Literal["short", "faceless", "product_shoot", "long"] = "short"
     # Spec 013: explicit script-handling mode. None = legacy behavior:
     # empty video_script → auto path; non-empty → verbatim. "auto"/"verbatim"
     # are explicit flavors of those two; "polish" sends the user-typed text

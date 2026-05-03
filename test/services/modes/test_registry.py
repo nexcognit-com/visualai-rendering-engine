@@ -32,7 +32,7 @@ def test_reg4_pick_product_shoot_raises() -> None:
 
 def test_reg5_supported_returns_all_registered_modes() -> None:
     s = modes.supported()
-    assert set(s) == {"short", "faceless"}
+    assert set(s) == {"short", "faceless", "long"}
 
 
 def test_reg6_each_module_satisfies_mode_protocol() -> None:
@@ -48,7 +48,16 @@ def test_reg7_each_modules_name_matches_registry_key() -> None:
         assert m.name == name
 
 
-def test_default_aspect_ratio_is_portrait_for_active_modes() -> None:
+def test_default_aspect_ratio_per_mode() -> None:
+    """Mode 2 + Mode 5 are vertical (9:16); Mode 3 is horizontal (16:9)."""
+    expected = {
+        "short": VideoAspect.portrait,
+        "faceless": VideoAspect.portrait,
+        "long": VideoAspect.landscape,
+    }
     for name in modes.supported():
         m = modes.pick(name)
-        assert m.default_aspect_ratio == VideoAspect.portrait
+        assert m.default_aspect_ratio == expected[name], (
+            f"{name!r} default_aspect_ratio={m.default_aspect_ratio}, "
+            f"expected {expected[name]}"
+        )

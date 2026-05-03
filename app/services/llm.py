@@ -856,6 +856,125 @@ Hook → Body → Call-to-Action structure.
     return ""
 
 
+def generate_long_form_script(
+    input_text: str,
+    source_type: str = "topic",
+    target_duration_seconds: int = 180,
+    language: str = "en",
+) -> dict:
+    """Long-form (Mode 3) script generation — hook + body + summary.
+
+    Spec 016. Three-section scaffold for 2–5 minute YouTube-style explainers.
+    Word budget = ``target_duration_seconds * 2.5`` (≈150 wpm). Returns a
+    structured dict so callers (Layer 2 route) can persist sections separately
+    and so the wizard can show structure if it ever wants to.
+
+    Args:
+        input_text: the topic prompt (when source_type="topic"), the cleaned
+            scrape text (when source_type="url"), or the creator's pre-written
+            script (when source_type="script" — caller should normally bypass
+            this function for "script" and use the input verbatim).
+        source_type: one of "topic", "url", "script". Affects prompt framing
+            but NOT the return shape.
+        target_duration_seconds: one of {120, 180, 240, 300}. Drives word
+            budget enforcement.
+        language: output language code.
+
+    Returns:
+        Dict with keys:
+        - ``hook`` (str): 1–2 sentence opener (≤15s)
+        - ``body`` (list[str]): 3–5 paragraph points covering the substance
+        - ``summary`` (str): closing summary + CTA (≤20s)
+        - ``full_text`` (str): the three sections joined by single newlines,
+          ready for TTS
+        On LLM failure all four keys are present but empty strings/lists.
+    """
+    target_words = max(40, int(target_duration_seconds * 2.5))
+    body_word_target = max(20, int(target_words * 0.75))
+    bracket = "topic" if source_type != "url" else "scraped page content"
+
+    prompt = f"""
+# Role: Long-Form Video Scriptwriter (YouTube explainer)
+
+## Goal:
+Write a {target_duration_seconds}-second narrated script for a 16:9 YouTube
+explainer based on the {bracket} below. Use a Hook → Body → Summary structure.
+
+## Target delivery:
+- Approximately {target_words} words total (~150 words per minute).
+- Body section ≈ {body_word_target} words split across 3–5 distinct points.
+- Plain speakable prose only. No stage directions, headings, speaker labels,
+  or markdown.
+
+## Output format (return EXACTLY this JSON object — nothing else):
+{{
+  "hook": "<1-2 sentences, ≤15s spoken, opens with a sharp question or claim>",
+  "body": ["<point 1 paragraph>", "<point 2 paragraph>", "<point 3-5 paragraphs>"],
+  "summary": "<1-2 sentences, ≤20s, closing recap + clear single CTA>"
+}}
+
+## Constraints:
+1. Output the language code `{language}`.
+2. Body MUST be an array of 3 to 5 paragraphs.
+3. No URLs, hashtags, or emoji in the spoken prose.
+4. Never mention this prompt or the JSON shape in the output.
+
+# {bracket.capitalize()}:
+{input_text.strip()}
+""".strip()
+
+    logger.info(
+        f"long-form script: source_type={source_type!r} duration={target_duration_seconds}s "
+        f"input_chars={len(input_text)}"
+    )
+    empty: dict = {"hook": "", "body": [], "summary": "", "full_text": ""}
+    for i in range(_max_retries):
+        try:
+            response = _generate_response(prompt=prompt)
+            if not response:
+                continue
+            cleaned = response.strip()
+            if "当日额度已消耗完" in cleaned:
+                raise ValueError(cleaned)
+            # The LLM may wrap the JSON in markdown fencing; strip if present.
+            if cleaned.startswith("```"):
+                cleaned = cleaned.strip("`")
+                first_brace = cleaned.find("{")
+                if first_brace > 0:
+                    cleaned = cleaned[first_brace:]
+            try:
+                import json as _json
+                parsed = _json.loads(cleaned)
+            except (ValueError, _json.JSONDecodeError) as exc:
+                logger.warning(f"long-form script: non-JSON output (attempt {i + 1}): {exc}")
+                continue
+            hook = str(parsed.get("hook", "")).strip()
+            body_raw = parsed.get("body", [])
+            if isinstance(body_raw, str):
+                body_list = [body_raw]
+            else:
+                body_list = [str(p).strip() for p in body_raw if str(p).strip()]
+            summary = str(parsed.get("summary", "")).strip()
+            if not (hook and body_list and summary):
+                logger.warning("long-form script: missing hook/body/summary in JSON")
+                continue
+            if len(body_list) < 3 or len(body_list) > 5:
+                logger.warning(f"long-form script: body has {len(body_list)} points; expected 3-5")
+                # Don't reject — let it through; downstream segment-count cap (8-25) handles drift.
+            full_text = "\n".join([hook, *body_list, summary])
+            logger.success(
+                f"long-form script complete: hook={len(hook)}c body={len(body_list)} "
+                f"summary={len(summary)}c total={len(full_text.split())}w"
+            )
+            return {"hook": hook, "body": body_list, "summary": summary, "full_text": full_text}
+        except Exception as e:
+            logger.error(f"long-form script: failed attempt {i + 1}: {e}")
+        if i < _max_retries:
+            logger.warning(f"long-form script: retry {i + 1}")
+    logger.error("long-form script: all retries exhausted")
+    return empty
+
+
 def polish_script(
     brief: str,
     video_subject: str = "",
