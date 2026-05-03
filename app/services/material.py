@@ -267,6 +267,48 @@ def download_videos(
             "this to route through Layer 2 pre-signed URLs in Step 3.5."
         )
 
+    # Spec 015 — NanoBanana-FIRST for tech/AI topics. Pixabay/Pexels search is
+    # too loose for niche queries: a search for "AI bounding boxes overlay"
+    # returns 2,641 robot/abstract clips with weak relevance, and our random
+    # shuffle then picks American flags instead of CCTV imagery. For tech
+    # topics we BYPASS stock entirely and generate every clip via NanoBanana
+    # — guaranteed on-topic visuals at ~$0.04/image.
+    #
+    # Stock-only path remains the default for general topics (Mediterranean
+    # diet, productivity tips, etc.) where stock libraries do have real
+    # inventory and relevance is acceptable.
+    haystack = " ".join(search_terms).lower()
+    tech_keywords = (
+        "ai", "artificial intelligence", "machine learning", "computer vision",
+        "cctv", "surveillance", "security camera", "cybersecurity",
+        "data center", "server", "control room", "dashboard", "tech",
+        "bounding box", "computer vision",
+    )
+    is_tech_topic = any(kw in haystack for kw in tech_keywords)
+
+    from app.services import nanobanana as _nanobanana
+    if is_tech_topic and _nanobanana.is_enabled():
+        logger.info(
+            "material: tech/AI topic detected; bypassing stock search "
+            "(too loose for niche queries) and generating all clips via NanoBanana"
+        )
+        ai_clip_paths = _generate_full_video_via_nanobanana(
+            task_id=task_id,
+            search_terms=search_terms,
+            audio_duration=audio_duration,
+            max_clip_duration=max_clip_duration,
+        )
+        if ai_clip_paths:
+            _write_asset_audit(task_id, {
+                "visuals_mode": "auto",
+                "auto_pexels_used": False,
+                "nanobanana_clip_count": len(ai_clip_paths),
+                "model_asset": None,
+                "product_assets": [],
+            })
+            return ai_clip_paths
+        logger.warning("nanobanana primary path returned 0 clips; falling through to stock")
+
     valid_video_items = []
     valid_video_urls = []
     found_duration = 0.0
@@ -388,6 +430,62 @@ def download_videos(
 
 _KENBURNS_FPS = 30
 _KENBURNS_MIN_DURATION = 2.0  # FR-014 / FR-016 floor
+
+
+def _generate_full_video_via_nanobanana(
+    *,
+    task_id: str,
+    search_terms: List[str],
+    audio_duration: float,
+    max_clip_duration: int,
+) -> List[str]:
+    """Spec 015 — generate the ENTIRE Mode 5 video as Ken-Burns'd NanoBanana
+    images. Used for tech/AI topics where stock-search relevance is broken.
+
+    Cost: ceil(audio_duration / max_clip_duration) images × $0.04. A typical
+    60s video at 5s/clip = 12 images = $0.48.
+
+    Round-robins through the user's search_terms so each gets equal screen
+    time. Falls back to whatever clips it could generate; the caller checks
+    for an empty list and falls through to stock when generation fails.
+    """
+    from app.services import nanobanana
+
+    clip_duration = float(max_clip_duration)
+    n_needed = max(3, int(round(audio_duration / clip_duration)))
+    n_needed = min(n_needed, 12)  # cap per-video spend at 12 imgs (~$0.48)
+
+    out_dir = path.join(utils.task_dir(task_id), "nanobanana")
+    os.makedirs(out_dir, exist_ok=True)
+    out_paths: List[str] = []
+
+    base_aesthetic = (
+        "Photorealistic, professional product photography, vertical 9:16 "
+        "composition, cinematic lighting, sharp focus, high detail. Subject: "
+    )
+    # Round-robin: cycle through search_terms so each gets equal coverage
+    for i in range(n_needed):
+        term = search_terms[i % len(search_terms)] if search_terms else "modern technology"
+        prompt = base_aesthetic + term
+        logger.info(f"nanobanana[{i + 1}/{n_needed}]: generating for {term!r}")
+        url = nanobanana.generate_image(prompt)
+        if not url:
+            continue
+        jpg_path = path.join(out_dir, f"img-{i + 1}.jpg")
+        if not nanobanana.download_image(url, jpg_path):
+            continue
+        clip_path = path.join(out_dir, f"clip-{i + 1}.mp4")
+        try:
+            _make_kenburns_clip(jpg_path, clip_duration, clip_path, _compute_seed(jpg_path))
+            out_paths.append(clip_path)
+        except Exception as exc:
+            logger.warning(f"ken-burns failed for nanobanana image {i + 1}: {exc}")
+
+    logger.success(
+        f"nanobanana primary: produced {len(out_paths)}/{n_needed} clips "
+        f"(${len(out_paths) * 0.04:.2f} estimated cost)"
+    )
+    return out_paths
 
 
 def _supplement_with_nanobanana_images(
