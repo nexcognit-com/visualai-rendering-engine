@@ -27,6 +27,11 @@ node_modules
 venv/
 .venv
 
+# Local secrets — NEVER commit
+.env
+.env.local
+.env.*.local
+
 # Debug and test files
 CLAUDE.md
 debug/

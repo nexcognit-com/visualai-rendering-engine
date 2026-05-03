@@ -343,6 +343,33 @@ def download_videos(
         except Exception as e:
             logger.error(f"failed to download video: {utils.to_json(item)} => {str(e)}")
     logger.success(f"downloaded {len(video_paths)} videos")
+
+    # Spec 015 — supplement with AI-generated hero images for tech/AI topics
+    # where stock video inventory is thin. Order: NanoBanana (best fit, cheap
+    # at $0.04/img, can render the niche AI/CCTV imagery stock libraries lack)
+    # → Shutterstock (skipped on free tier — license endpoint requires upgrade).
+    # Both helpers gracefully no-op when their provider isn't configured.
+    if total_duration < audio_duration:
+        nb_paths = _supplement_with_nanobanana_images(
+            task_id=task_id,
+            search_terms=search_terms,
+            duration_needed=audio_duration - total_duration,
+            max_clip_duration=max_clip_duration,
+        )
+        video_paths.extend(nb_paths)
+        # Re-tally before falling through to Shutterstock
+        total_duration += len(nb_paths) * float(max_clip_duration)
+
+    if total_duration < audio_duration:
+        shutterstock_paths = _supplement_with_shutterstock_images(
+            task_id=task_id,
+            search_terms=search_terms,
+            video_aspect=video_aspect,
+            duration_needed=audio_duration - total_duration,
+            max_clip_duration=max_clip_duration,
+        )
+        video_paths.extend(shutterstock_paths)
+
     # Spec 006 FR-021: every render writes an audit log regardless of mode.
     _write_asset_audit(task_id, {
         "visuals_mode": "auto",
@@ -361,6 +388,171 @@ def download_videos(
 
 _KENBURNS_FPS = 30
 _KENBURNS_MIN_DURATION = 2.0  # FR-014 / FR-016 floor
+
+
+def _supplement_with_nanobanana_images(
+    *,
+    task_id: str,
+    search_terms: List[str],
+    duration_needed: float,
+    max_clip_duration: int,
+) -> List[str]:
+    """Spec 015 — generate AI hero images via NanoBanana, Ken-Burns them.
+
+    Triggers when:
+    - NanoBanana is configured (FAL_KEY env var set)
+    - Caller still needs more video duration
+    - At least one search term contains a tech/AI keyword (avoids spending
+      cents on generic topics that already get rich stock-video coverage)
+
+    Cost: ~$0.04 per image. 5-8 images per video = $0.20-0.32. Generates
+    the niche AI/CCTV/dashboard imagery stock libraries lack.
+
+    Returns local paths of Ken Burns clips. Empty list on misconfig /
+    non-tech topic / generation failures.
+    """
+    from app.services import nanobanana
+
+    if not nanobanana.is_enabled():
+        logger.info("nanobanana supplement skipped (FAL_KEY not configured)")
+        return []
+
+    haystack = " ".join(search_terms).lower()
+    tech_keywords = (
+        "ai", "artificial intelligence", "machine learning", "computer vision",
+        "cctv", "surveillance", "security camera", "cybersecurity",
+        "data center", "server", "control room", "dashboard", "tech",
+        "warehouse", "factory", "industrial", "drone",
+    )
+    if not any(kw in haystack for kw in tech_keywords):
+        logger.info("nanobanana supplement skipped (topic not tech/AI)")
+        return []
+
+    clip_duration = float(max_clip_duration)
+    n_needed = max(1, int(round(duration_needed / clip_duration)))
+    n_needed = min(n_needed, 8)  # cap per-video spend at 8 imgs (~$0.32)
+
+    out_dir = path.join(utils.task_dir(task_id), "nanobanana")
+    os.makedirs(out_dir, exist_ok=True)
+    out_paths: List[str] = []
+
+    # Build prompts: use each search term as the seed for a hero image.
+    # The wrapper text gives NanoBanana the right tech-photography aesthetic.
+    base_aesthetic = (
+        "Photorealistic, professional product photography, vertical 9:16 "
+        "composition, cinematic lighting, sharp focus, high detail. Subject: "
+    )
+    for i, term in enumerate(search_terms[:n_needed], start=1):
+        prompt = base_aesthetic + term
+        logger.info(f"nanobanana[{i}/{n_needed}]: generating for {term!r}")
+        url = nanobanana.generate_image(prompt)
+        if not url:
+            continue
+        jpg_path = path.join(out_dir, f"img-{i}.jpg")
+        if not nanobanana.download_image(url, jpg_path):
+            continue
+        clip_path = path.join(out_dir, f"clip-{i}.mp4")
+        try:
+            _make_kenburns_clip(jpg_path, clip_duration, clip_path, _compute_seed(jpg_path))
+            out_paths.append(clip_path)
+        except Exception as exc:
+            logger.warning(f"ken-burns failed for nanobanana image {i}: {exc}")
+
+    logger.success(f"nanobanana supplement produced {len(out_paths)} ken-burns clips")
+    return out_paths
+
+
+def _supplement_with_shutterstock_images(
+    *,
+    task_id: str,
+    search_terms: List[str],
+    video_aspect: VideoAspect,
+    duration_needed: float,
+    max_clip_duration: int,
+) -> List[str]:
+    """Spec 015 — license Shutterstock images, Ken-Burns them into clips.
+
+    Triggers only when:
+    - Shutterstock is configured (SHUTTERSTOCK_CONSUMER_KEY etc set)
+    - The caller still needs more video duration
+    - At least one search term contains a tech/AI keyword (avoids spending
+      the 500/mo quota on generic topics that already get rich video coverage)
+
+    Returns local paths of generated Ken Burns clips. Empty list on
+    misconfig / quota exhaustion / no matches.
+    """
+    from app.services import shutterstock
+
+    if not shutterstock.is_enabled():
+        logger.info("shutterstock supplement skipped (not configured)")
+        return []
+
+    # Domain gate — only burn quota for topics where Shutterstock has the
+    # inventory advantage. Mirrors the keyword set in llm._DOMAIN_PROXIES.
+    haystack = " ".join(search_terms).lower()
+    tech_keywords = (
+        "ai", "artificial intelligence", "machine learning", "computer vision",
+        "cctv", "surveillance", "security camera", "cybersecurity",
+        "data center", "server", "control room", "dashboard", "tech",
+        "warehouse", "factory", "industrial", "drone",
+    )
+    if not any(kw in haystack for kw in tech_keywords):
+        logger.info("shutterstock supplement skipped (topic not tech/AI)")
+        return []
+
+    clip_duration = float(max_clip_duration)
+    n_needed = max(1, int(round(duration_needed / clip_duration)))
+    # Cap at 8 to stay polite with the free 500/mo quota.
+    n_needed = min(n_needed, 8)
+
+    out_paths: List[str] = []
+    out_dir = path.join(utils.task_dir(task_id), "shutterstock")
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Round-robin through search terms — each term contributes one image
+    # until we've gathered n_needed. Tighter coverage than draining one
+    # term then moving on.
+    images_per_term: dict[str, list] = {}
+    for term in search_terms:
+        if len(out_paths) >= n_needed:
+            break
+        hits = shutterstock.search_images(query=term, per_page=3, orientation="vertical")
+        images_per_term[term] = list(hits)
+
+    fetched_ids: set[str] = set()
+    round_idx = 0
+    while len(out_paths) < n_needed:
+        progress_this_round = False
+        for term, hits in images_per_term.items():
+            if len(out_paths) >= n_needed:
+                break
+            if round_idx >= len(hits):
+                continue
+            img = hits[round_idx]
+            if img.id in fetched_ids:
+                continue
+            fetched_ids.add(img.id)
+
+            jpg_path = path.join(out_dir, f"img-{img.id}.jpg")
+            if not shutterstock.license_and_download_image(img.id, jpg_path):
+                continue
+            clip_path = path.join(out_dir, f"clip-{len(out_paths) + 1}.mp4")
+            try:
+                _make_kenburns_clip(jpg_path, clip_duration, clip_path, _compute_seed(jpg_path))
+                out_paths.append(clip_path)
+                progress_this_round = True
+            except Exception as exc:
+                logger.warning(f"ken-burns failed for shutterstock image {img.id}: {exc}")
+        round_idx += 1
+        if not progress_this_round:
+            # Either all terms exhausted their hits or all licenses failed
+            break
+
+    logger.success(
+        f"shutterstock supplement produced {len(out_paths)} ken-burns clips "
+        f"(needed {n_needed}, fetched {len(fetched_ids)} images)"
+    )
+    return out_paths
 
 
 def _download_from_pre_signed_urls(task_id: str, urls: List[str]) -> List[str]:
