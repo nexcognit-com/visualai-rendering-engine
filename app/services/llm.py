@@ -579,6 +579,159 @@ aren't in the snippets.
     return generate_script(video_subject=topic, language=language, paragraph_number=1)
 
 
+# ---------------------------------------------------------------------------
+# Spec 015 Fix #3 — domain-aware term expansion (Mode 5 quality)
+# ---------------------------------------------------------------------------
+#
+# When a topic mentions abstract tech/AI/security concepts (e.g.
+# "AI surveillance", "computer vision", "machine learning"), the LLM-derived
+# search terms tend to drift to other abstract phrasings ("AI surveillance
+# system", "ML pipeline") that stock libraries can't film. This module
+# augments those terms with visually-rich PROXIES that stock libraries DO
+# have ("server room blinking lights", "code on screen", "drone over
+# warehouse"), giving the final video a more believable tech-aesthetic.
+
+# Topic keyword → list of stock-library-friendly visual proxies.
+# Conservatively curated. Each entry is one stock-clip-worthy noun phrase.
+_DOMAIN_PROXIES: dict[str, List[str]] = {
+    # AI / ML / computer vision
+    "ai": [
+        "server room blinking lights",
+        "code on screen close-up",
+        "data dashboard interface",
+        "futuristic touch screen",
+        "neural network animation",
+    ],
+    "artificial intelligence": [
+        "data center server racks",
+        "code on screen close-up",
+        "data dashboard interface",
+        "neural network animation",
+    ],
+    "machine learning": [
+        "code on screen close-up",
+        "data visualization graphs",
+        "server room blinking lights",
+        "data dashboard interface",
+    ],
+    "computer vision": [
+        "drone over warehouse",
+        "factory floor overhead",
+        "security camera close-up",
+        "data dashboard interface",
+        "augmented reality overlay",
+    ],
+    # CCTV / surveillance / security
+    "cctv": [
+        "security camera close-up",
+        "warehouse interior wide shot",
+        "factory floor overhead",
+        "control room monitors",
+        "drone over warehouse",
+    ],
+    "surveillance": [
+        "control room monitors",
+        "security camera close-up",
+        "warehouse interior wide shot",
+        "drone over building",
+        "factory floor overhead",
+    ],
+    "security camera": [
+        "security camera close-up",
+        "warehouse interior wide shot",
+        "control room monitors",
+        "factory floor overhead",
+    ],
+    "cybersecurity": [
+        "server room blinking lights",
+        "code on screen close-up",
+        "data dashboard interface",
+        "hacker typing close-up",
+    ],
+    # Productivity / workplace
+    "productivity": [
+        "modern office wide shot",
+        "people working laptops",
+        "data dashboard interface",
+        "warehouse workers",
+    ],
+    # Health / safety / industrial
+    "health and safety": [
+        "warehouse workers hard hats",
+        "factory floor overhead",
+        "construction site safety",
+        "industrial workers",
+    ],
+    "warehouse": [
+        "warehouse interior wide shot",
+        "warehouse workers",
+        "forklift operating",
+        "drone over warehouse",
+    ],
+    "factory": [
+        "factory floor overhead",
+        "industrial machinery close-up",
+        "factory workers",
+        "manufacturing line",
+    ],
+}
+
+
+def expand_domain_terms(
+    raw_terms: List[str],
+    *,
+    topic: str = "",
+    script: str = "",
+    max_total: int = 8,
+) -> List[str]:
+    """Augment LLM-derived terms with visually-rich stock proxies.
+
+    Detection runs against ``topic + script + raw_terms`` (lowercase, joined).
+    For each matching domain keyword, mixes 2-3 proxies into the term list.
+    Original LLM terms are preserved at the front so the agent's intent stays
+    primary; proxies fill the tail for visual variety.
+
+    Returns up to ``max_total`` deduplicated terms in pin-friendly order.
+    """
+    if not raw_terms and not (topic or script):
+        return raw_terms
+
+    haystack = " ".join([topic, script, *raw_terms]).lower()
+    proxies: List[str] = []
+    matched_domains: List[str] = []
+
+    for keyword, replacements in _DOMAIN_PROXIES.items():
+        if keyword in haystack:
+            matched_domains.append(keyword)
+            # Take the first 2 proxies per matched domain to keep variety
+            # without crowding out the agent's terms.
+            for p in replacements[:2]:
+                if p not in proxies:
+                    proxies.append(p)
+
+    if not matched_domains:
+        return raw_terms
+
+    # Original terms first (preserves agent intent), proxies fill the tail.
+    out: List[str] = []
+    seen = set()
+    for term in raw_terms + proxies:
+        norm = term.strip()
+        key = norm.lower()
+        if not norm or key in seen:
+            continue
+        seen.add(key)
+        out.append(norm)
+        if len(out) >= max_total:
+            break
+
+    logger.info(
+        f"expand_domain_terms: matched {matched_domains} → "
+        f"+{len(out) - len(raw_terms)} proxy terms (final: {len(out)})"
+    )
+    return out
+
+
 def generate_terms(video_subject: str, video_script: str, amount: int = 5) -> List[str]:
     prompt = f"""
 # Role: Video Search Terms Generator

@@ -39,11 +39,24 @@ def generate_script(params: VideoParams) -> str:
 
 
 def generate_terms(params: VideoParams, video_script: str) -> list[str]:
-    """Generic Pexels-friendly terms drawn from topic + script."""
-    return llm.generate_terms(
+    """Generic Pexels-friendly terms drawn from topic + script.
+
+    Spec 015 Fix #3: post-process LLM terms with domain-aware proxies — for
+    tech/AI/security topics, swap in visually-rich stock-library-friendly
+    proxies (e.g. "AI surveillance" → "server room blinking lights",
+    "control room monitors", "drone over warehouse") that stock libraries
+    actually have inventory for.
+    """
+    base_terms = llm.generate_terms(
         video_subject=params.video_subject,
         video_script=video_script,
         amount=5,
+    )
+    return llm.expand_domain_terms(
+        base_terms,
+        topic=params.video_subject or "",
+        script=video_script or "",
+        max_total=8,
     )
 
 
