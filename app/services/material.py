@@ -299,7 +299,14 @@ def download_videos(
     # search_terms list usually strips the URL out.
     subject_for_url_check = _read_video_subject_from_script_json(task_id)
     haystack_for_url = (subject_for_url_check + " " + " ".join(search_terms)).lower()
-    has_url = ("http://" in haystack_for_url) or ("https://" in haystack_for_url)
+    # Detect URL signals: raw URL strings OR spec-012's "(sourced from
+    # <domain>)" marker that the frontend's URL-scrape adds to the
+    # enriched subject (the raw URL is stripped by composeEnrichedSubject).
+    has_url = (
+        "http://" in haystack_for_url
+        or "https://" in haystack_for_url
+        or "(sourced from " in haystack_for_url
+    )
 
     from app.services import nanobanana as _nanobanana
     if has_url and _nanobanana.is_enabled():
