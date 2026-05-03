@@ -217,6 +217,23 @@ def download_videos(
     audio_duration: float = 0.0,
     max_clip_duration: int = 5,
 ) -> List[str]:
+    # ============================================================================
+    # USER POLICY (set by Amr 2026-05-03 — see chat log):
+    #
+    #   1. Pexels is EXCLUDED. Pexels' relevance ranking returned random clips
+    #      (American flags, snowflakes, hand-on-keyboard) for niche tech queries
+    #      like "AI bounding boxes overlay". Pixabay-only is the new default.
+    #   2. URL detected in topic → 100% NanoBanana (FAL.ai) generation. URLs
+    #      typically signal product-specific intent ("show MY product"); only
+    #      AI generation can render arbitrary on-prompt visuals.
+    #   3. No URL → Pixabay only. Stock B-roll for general topics like
+    #      "Mediterranean diet" / "productivity tips".
+    #
+    # To change this policy: edit the dispatch block immediately after this
+    # comment. The Pexels code path (search_videos_pexels) is intentionally
+    # left in the file so it can be re-enabled by changing the dispatcher,
+    # but should NOT be called from the auto path.
+    # ============================================================================
     # Spec 006: short-circuit on a visuals.json sidecar written by the video
     # controller before render dispatch. When present + visuals_mode is
     # "user_uploaded", we replace the Pexels fetch entirely with Ken Burns
@@ -267,30 +284,23 @@ def download_videos(
             "this to route through Layer 2 pre-signed URLs in Step 3.5."
         )
 
-    # Spec 015 — NanoBanana-FIRST for tech/AI topics. Pixabay/Pexels search is
-    # too loose for niche queries: a search for "AI bounding boxes overlay"
-    # returns 2,641 robot/abstract clips with weak relevance, and our random
-    # shuffle then picks American flags instead of CCTV imagery. For tech
-    # topics we BYPASS stock entirely and generate every clip via NanoBanana
-    # — guaranteed on-topic visuals at ~$0.04/image.
+    # === USER-POLICY DISPATCH (see comment block at top of download_videos) ===
+    # Branch A: subject contains a URL → 100% NanoBanana (URL signals product
+    #           specificity that stock can't satisfy)
+    # Branch B: no URL → Pixabay only (Pexels excluded — see policy comment)
     #
-    # Stock-only path remains the default for general topics (Mediterranean
-    # diet, productivity tips, etc.) where stock libraries do have real
-    # inventory and relevance is acceptable.
-    haystack = " ".join(search_terms).lower()
-    tech_keywords = (
-        "ai", "artificial intelligence", "machine learning", "computer vision",
-        "cctv", "surveillance", "security camera", "cybersecurity",
-        "data center", "server", "control room", "dashboard", "tech",
-        "bounding box", "computer vision",
-    )
-    is_tech_topic = any(kw in haystack for kw in tech_keywords)
+    # We detect URLs from `script.json#params.video_subject` (written by
+    # save_script_data() before this function runs) since the LLM-derived
+    # search_terms list usually strips the URL out.
+    subject_for_url_check = _read_video_subject_from_script_json(task_id)
+    haystack_for_url = (subject_for_url_check + " " + " ".join(search_terms)).lower()
+    has_url = ("http://" in haystack_for_url) or ("https://" in haystack_for_url)
 
     from app.services import nanobanana as _nanobanana
-    if is_tech_topic and _nanobanana.is_enabled():
+    if has_url and _nanobanana.is_enabled():
         logger.info(
-            "material: tech/AI topic detected; bypassing stock search "
-            "(too loose for niche queries) and generating all clips via NanoBanana"
+            "material: URL detected in topic; routing 100% to NanoBanana "
+            "(FAL.ai) per user policy. Pixabay/Pexels skipped."
         )
         ai_clip_paths = _generate_full_video_via_nanobanana(
             task_id=task_id,
@@ -303,53 +313,34 @@ def download_videos(
                 "visuals_mode": "auto",
                 "auto_pexels_used": False,
                 "nanobanana_clip_count": len(ai_clip_paths),
+                "dispatch_reason": "url_detected",
                 "model_asset": None,
                 "product_assets": [],
             })
             return ai_clip_paths
-        logger.warning("nanobanana primary path returned 0 clips; falling through to stock")
+        logger.warning("nanobanana URL-path returned 0 clips; falling through to Pixabay")
 
     valid_video_items = []
     valid_video_urls = []
     found_duration = 0.0
 
-    # Spec 015 Mode-5 quality: when caller doesn't pin a single provider
-    # (source == 'pexels' default), use Pixabay-first dual-source — denser
-    # business / industrial / professional inventory than Pexels alone.
-    # Single-provider override (source == 'pixabay' or 'pexels' explicit
-    # pin via params.video_source) preserves legacy behaviour.
-    explicit_single_source = source in ("pixabay",) or (
-        source == "pexels" and config.app.get("force_single_source_pexels", False)
-    )
-    if explicit_single_source:
-        search_videos = search_videos_pixabay if source == "pixabay" else search_videos_pexels
-        for search_term in search_terms:
-            video_items = search_videos(
-                search_term=search_term,
-                minimum_duration=max_clip_duration,
-                video_aspect=video_aspect,
-            )
-            logger.info(f"found {len(video_items)} videos for '{search_term}' (single-source: {source})")
-            for item in video_items:
-                if item.url not in valid_video_urls:
-                    valid_video_items.append(item)
-                    valid_video_urls.append(item.url)
-                    found_duration += item.duration
-    else:
-        # Dual-source: Pixabay first (denser), Pexels fills gaps. Round-robin
-        # across queries to maximise topical coverage when many terms are given.
-        for search_term in search_terms:
-            items = _search_stock_dual_source(
-                query=search_term,
-                video_aspect=video_aspect,
-                max_clip_duration=max_clip_duration,
-            )
-            logger.info(f"found {len(items)} videos for '{search_term}' (dual-source pixabay+pexels)")
-            for item in items:
-                if item.url not in valid_video_urls:
-                    valid_video_items.append(item)
-                    valid_video_urls.append(item.url)
-                    found_duration += item.duration
+    # === USER POLICY: Pixabay only — see comment block at top ===
+    # Pexels is excluded by user request (its relevance ranking returned
+    # random clips for niche tech queries). To re-enable Pexels: replace
+    # `search_videos_pixabay` below with `_search_stock_dual_source(...)`
+    # OR with `search_videos_pexels` per term.
+    for search_term in search_terms:
+        video_items = search_videos_pixabay(
+            search_term=search_term,
+            minimum_duration=max_clip_duration,
+            video_aspect=video_aspect,
+        )
+        logger.info(f"found {len(video_items)} videos for '{search_term}' (pixabay-only)")
+        for item in video_items:
+            if item.url not in valid_video_urls:
+                valid_video_items.append(item)
+                valid_video_urls.append(item.url)
+                found_duration += item.duration
 
     logger.info(
         f"found total videos: {len(valid_video_items)}, required duration: {audio_duration} seconds, found duration: {found_duration} seconds"
@@ -430,6 +421,25 @@ def download_videos(
 
 _KENBURNS_FPS = 30
 _KENBURNS_MIN_DURATION = 2.0  # FR-014 / FR-016 floor
+
+
+def _read_video_subject_from_script_json(task_id: str) -> str:
+    """Read params.video_subject from the per-task script.json.
+
+    Used by the URL-detection dispatch in download_videos. Returns "" on
+    any failure (file missing, parse error, key missing) so the dispatch
+    falls through to Branch B (Pixabay-only) gracefully.
+    """
+    script_json_path = path.join(utils.task_dir(task_id), "script.json")
+    if not os.path.exists(script_json_path):
+        return ""
+    try:
+        with open(script_json_path, encoding="utf-8") as f:
+            data = json.load(f)
+        return str(data.get("params", {}).get("video_subject") or "")
+    except (OSError, json.JSONDecodeError, AttributeError) as exc:
+        logger.warning(f"could not read video_subject from script.json: {exc}")
+        return ""
 
 
 def _generate_full_video_via_nanobanana(
