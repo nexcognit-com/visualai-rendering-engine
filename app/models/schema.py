@@ -83,6 +83,19 @@ class VideoParams(BaseModel):
     # (16:9 YouTube, 2-5 min). Layer 2 builds the script + B-roll list
     # upstream; Layer 3 assembles per the long_form mode registry entry.
     mode: Literal["short", "faceless", "product_shoot", "long"] = "short"
+
+    # Spec 017 — Visual-relevance pipeline. Layer 2.5 may pre-resolve each
+    # narration segment to a specific clip URL (semantically aligned via
+    # Twelve Labs embed re-ranking, with Kling fallback when stock fails).
+    # When provided, these flow into the visuals.json sidecar so material.py
+    # bypasses Pixabay/NanoBanana entirely. Both fields are optional —
+    # absence = legacy auto-stock dispatch.
+    pre_signed_clip_urls: Optional[List[str]] = None
+    # Per-segment metadata (text, visual_prompt, target_seconds, provenance,
+    # verifier_score). Length matches pre_signed_clip_urls; index N's URL
+    # plays during segment N's narration. Stored verbatim in the sidecar
+    # for asset-audit traceability.
+    segments: Optional[list] = None
     # Spec 013: explicit script-handling mode. None = legacy behavior:
     # empty video_script → auto path; non-empty → verbatim. "auto"/"verbatim"
     # are explicit flavors of those two; "polish" sends the user-typed text

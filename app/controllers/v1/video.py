@@ -180,8 +180,42 @@ def _maybe_write_visuals_sidecar(task_id: str, body, request_id: str) -> None:
     For hybrid (Clarifications 2026-05-03), also resolves the setting tag and
     expands it into 5 Pexels-friendly queries before dispatch, persisting both
     into the sidecar so material.download_videos can read them.
+
+    Spec 017 — also written when ``pre_signed_clip_urls`` is present on the
+    request body (Layer 2's visual_relevance pipeline pre-resolved per-segment
+    clips). In that case material.download_videos short-circuits to fetching
+    those URLs in segment order, bypassing Pixabay entirely.
     """
     visuals_mode = getattr(body, "visuals_mode", None)
+    pre_signed = getattr(body, "pre_signed_clip_urls", None) or None
+    segments = getattr(body, "segments", None) or None
+
+    # Spec 017 path — Layer 2 has pre-resolved clips. Always write the
+    # sidecar so material.download_videos picks them up. Bypasses the
+    # visuals_mode check below.
+    if pre_signed:
+        task_dir = utils.task_dir(task_id, create=True) if "create" in \
+            utils.task_dir.__code__.co_varnames else utils.task_dir(task_id)
+        if not os.path.isdir(task_dir):
+            os.makedirs(task_dir, exist_ok=True)
+        sidecar_path = os.path.join(task_dir, "visuals.json")
+        payload: dict = {
+            "mode": getattr(body, "mode", "short"),
+            "visuals_mode": visuals_mode,
+            "uploaded_model_path": getattr(body, "uploaded_model_path", None),
+            "uploaded_product_paths": list(getattr(body, "uploaded_product_paths", []) or []),
+            "pre_signed_clip_urls": pre_signed,
+            "segments": segments,  # spec-017 per-segment metadata
+        }
+        with open(sidecar_path, "w", encoding="utf-8") as f:
+            import json as _json
+            _json.dump(payload, f, indent=2)
+        logger.info(
+            f"wrote spec-017 visuals sidecar at {sidecar_path}: "
+            f"{len(pre_signed)} clips, {len(segments) if segments else 0} segments"
+        )
+        return
+
     if visuals_mode not in ("user_uploaded", "hybrid"):
         return
 
