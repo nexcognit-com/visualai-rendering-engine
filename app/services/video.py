@@ -452,6 +452,23 @@ def generate_video(
     if params.subtitle_enabled:
         if not params.font_name:
             params.font_name = "STHeitiMedium.ttc"
+
+        # Auto-swap to an Arabic-capable font when the subtitles contain
+        # Arabic characters. The default STHeitiMedium has CJK + Latin
+        # glyphs only — Arabic codepoints render as tofu boxes (□□□).
+        # Triggered 2026-05-05 after Arabic-voice rollout. GeezaPro.ttc is
+        # bundled in resource/fonts/ from macOS; covers Arabic + Persian.
+        try:
+            with open(subtitle_path, "r", encoding="utf-8") as _sf:
+                _subtitle_text = _sf.read()
+            # Arabic Unicode block: U+0600..U+06FF + presentation forms
+            if any("؀" <= ch <= "ۿ" or "ﭐ" <= ch <= "﻿"
+                   for ch in _subtitle_text):
+                params.font_name = "GeezaPro.ttc"
+                logger.info("  ⑤ subtitle is Arabic — switched font to GeezaPro.ttc")
+        except OSError:
+            pass
+
         font_path = os.path.join(utils.font_dir(), params.font_name)
         if os.name == "nt":
             font_path = font_path.replace("\\", "/")

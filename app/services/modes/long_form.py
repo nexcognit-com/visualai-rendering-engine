@@ -18,6 +18,7 @@ from typing import Final
 
 from app.models.schema import VideoAspect, VideoParams
 from app.services import llm
+from app.services.voice import infer_language_from_voice
 
 from ._interface import VisualsStrategy
 
@@ -57,11 +58,16 @@ def generate_script(params: VideoParams) -> str:
             target_seconds = duration_choices_seconds[0]
         elif target_seconds > duration_choices_seconds[-1]:
             target_seconds = duration_choices_seconds[-1]
+    language = (
+        params.video_language
+        or infer_language_from_voice(params.voice_name)
+        or "en"
+    )
     result = llm.generate_long_form_script(
         input_text=params.video_subject or "",
         source_type="topic",
         target_duration_seconds=target_seconds,
-        language=params.video_language or "en",
+        language=language,
     )
     return result.get("full_text", "")
 

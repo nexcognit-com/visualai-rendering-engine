@@ -13,6 +13,7 @@ from typing import Literal
 
 from app.models.schema import VideoAspect, VideoParams
 from app.services import llm
+from app.services.voice import infer_language_from_voice
 
 from ._interface import VisualsStrategy
 
@@ -28,9 +29,16 @@ def generate_script(params: VideoParams) -> str:
     :func:`llm.generate_marketing_script` when the wizard signals
     marketing-style intent.
     """
+    # When the wizard doesn't pass an explicit language (the L1 dropdown
+    # currently always sends ""), derive it from the chosen voice's locale.
+    # Otherwise an Arabic voice (e.g. ar-EG-SalmaNeural) ends up reading
+    # an English script — Edge TTS reads whatever text you give it, so the
+    # result is unintelligible. 2026-05-05 regression caught after the
+    # voice-catalog dropdown expansion to multilingual voices.
+    language = params.video_language or infer_language_from_voice(params.voice_name)
     return llm.generate_script(
         video_subject=params.video_subject,
-        language=params.video_language or "",
+        language=language,
         paragraph_number=params.paragraph_number or 1,
     )
 

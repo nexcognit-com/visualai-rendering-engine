@@ -44,12 +44,20 @@ def generate_script(task_id, params):
             )
             logger.error("polish mode requires a non-empty brief")
             return None
+        # Voice-locale fallback (parity with modes/short.py auto path) so a
+        # polish-mode brief gets cleaned up in the voice's language, not "en".
+        from app.services.voice import infer_language_from_voice
+        polish_language = (
+            params.video_language
+            or infer_language_from_voice(getattr(params, "voice_name", None))
+            or "en"
+        )
         try:
             video_script = llm.polish_script(
                 brief=video_script,
                 video_subject=params.video_subject or "",
                 duration_seconds=20,
-                language=params.video_language or "en",
+                language=polish_language,
             )
         except Exception as exc:
             logger.error(f"polish_script failed: {exc}")

@@ -1113,6 +1113,90 @@ def parse_voice_name(name: str):
     return name
 
 
+# Locale → human-readable language name for the script-gen LLM prompt.
+# More-specific (locale) entries override less-specific (lang-family) entries.
+_LOCALE_LANGUAGE_MAP: dict[str, str] = {
+    # Arabic dialects — the LLM produces visibly different text per dialect.
+    "ar-EG": "Arabic (Egyptian dialect)",
+    "ar-SA": "Arabic (Modern Standard, Saudi)",
+    "ar-AE": "Arabic (Gulf, UAE)",
+    "ar-LB": "Arabic (Levantine, Lebanon)",
+    "ar-MA": "Arabic (Moroccan dialect)",
+    "ar-IQ": "Arabic (Iraqi dialect)",
+    "ar-SY": "Arabic (Syrian dialect)",
+    "ar-JO": "Arabic (Jordanian dialect)",
+    "ar-KW": "Arabic (Kuwaiti dialect)",
+    "ar-BH": "Arabic (Bahraini dialect)",
+    "ar-DZ": "Arabic (Algerian dialect)",
+    "ar-OM": "Arabic (Omani dialect)",
+    "ar-QA": "Arabic (Qatari dialect)",
+    "ar-TN": "Arabic (Tunisian dialect)",
+    "ar-LY": "Arabic (Libyan dialect)",
+    "ar-YE": "Arabic (Yemeni dialect)",
+    # English variants
+    "en-US": "English (American)",
+    "en-GB": "English (British)",
+    "en-AU": "English (Australian)",
+    "en-CA": "English (Canadian)",
+    "en-IE": "English (Irish)",
+    "en-IN": "English (Indian)",
+    "en-NZ": "English (New Zealand)",
+    "en-ZA": "English (South African)",
+    # Spanish variants
+    "es-ES": "Spanish (Spain)",
+    "es-MX": "Spanish (Mexican)",
+    "es-AR": "Spanish (Argentinian)",
+    "es-CO": "Spanish (Colombian)",
+    "es-US": "Spanish (US)",
+    # French variants
+    "fr-FR": "French (France)",
+    "fr-CA": "French (Canadian)",
+    "fr-BE": "French (Belgian)",
+    "fr-CH": "French (Swiss)",
+    # Portuguese variants
+    "pt-BR": "Portuguese (Brazilian)",
+    "pt-PT": "Portuguese (European)",
+    # Chinese variants
+    "zh-CN": "Mandarin Chinese (Simplified)",
+    "zh-TW": "Mandarin Chinese (Traditional, Taiwan)",
+    "zh-HK": "Cantonese Chinese (Hong Kong)",
+}
+
+_LANG_FAMILY_MAP: dict[str, str] = {
+    "en": "English", "ar": "Arabic", "es": "Spanish", "fr": "French",
+    "de": "German", "it": "Italian", "pt": "Portuguese", "hi": "Hindi",
+    "zh": "Mandarin Chinese", "ja": "Japanese", "ko": "Korean", "ru": "Russian",
+    "tr": "Turkish", "nl": "Dutch", "pl": "Polish", "sv": "Swedish",
+    "da": "Danish", "no": "Norwegian", "fi": "Finnish", "cs": "Czech",
+    "el": "Greek", "he": "Hebrew", "th": "Thai", "vi": "Vietnamese",
+    "id": "Indonesian", "ms": "Malay", "uk": "Ukrainian", "ur": "Urdu",
+    "fa": "Persian", "bn": "Bengali", "ta": "Tamil", "te": "Telugu",
+}
+
+
+def infer_language_from_voice(voice_name: str | None) -> str:
+    """Return a human-readable language name from an Edge TTS voice id.
+
+    Format: ``<lang>-<REGION>-...`` e.g. ``ar-EG-SalmaNeural-Female``.
+    Used as a fallback for the script-gen LLM prompt when the wizard
+    doesn't pass an explicit ``video_language`` — otherwise an Arabic
+    voice ends up reading an English script (Edge TTS reads what you
+    give it, the result is gibberish).
+
+    Returns "" when the voice id is empty or malformed; caller's existing
+    "respond in the same language as the video subject" rule then applies.
+    """
+    if not voice_name:
+        return ""
+    parts = voice_name.split("-")
+    if len(parts) < 2:
+        return ""
+    locale = f"{parts[0]}-{parts[1]}"
+    if locale in _LOCALE_LANGUAGE_MAP:
+        return _LOCALE_LANGUAGE_MAP[locale]
+    return _LANG_FAMILY_MAP.get(parts[0], "")
+
+
 def is_azure_v2_voice(voice_name: str):
     voice_name = parse_voice_name(voice_name)
     if voice_name.endswith("-V2"):

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from app.models.schema import VideoAspect, VideoParams
 from app.services import llm
+from app.services.voice import infer_language_from_voice
 
 from ._interface import VisualsStrategy
 
@@ -30,11 +31,17 @@ def generate_script(params: VideoParams) -> str:
     """
     topic = (params.video_subject or "").strip()
     facts = llm.research_topic(topic) if topic else []
+    # Voice-locale fallback so an Arabic voice gets an Arabic script.
+    language = (
+        params.video_language
+        or infer_language_from_voice(params.voice_name)
+        or "en"
+    )
     return llm.generate_faceless_script_grounded(
         topic=topic,
         facts=facts,
         duration_seconds=60,
-        language=params.video_language or "en",
+        language=language,
     )
 
 
