@@ -14,13 +14,14 @@ from __future__ import annotations
 
 from typing import Final
 
-from . import faceless, long_form, short
+from . import faceless, long_form, short, ugc_avatar
 from ._interface import Mode
 
 _REGISTRY: Final[dict[str, Mode]] = {
-    "short": short,         # Mode 2 — Short Marketing Video
-    "faceless": faceless,   # Mode 5 — Faceless Channel Automation
-    "long": long_form,      # Mode 3 — Long-Form Video (spec 016)
+    "short": short,             # Mode 2 — Short Marketing Video
+    "faceless": faceless,       # Mode 5 — Faceless Channel Automation
+    "long": long_form,          # Mode 3 — Long-Form Video (spec 016)
+    "ugc_avatar": ugc_avatar,   # Mode 4 — UGC Avatar Generator (spec 018)
 }
 
 

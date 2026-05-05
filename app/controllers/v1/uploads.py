@@ -418,3 +418,297 @@ def upload_image(
     if meta["low_res"]:
         response["warning"] = "low_resolution"
     return response
+
+
+# ---------------------------------------------------------------------------
+# Spec 018 — Mode 4 UGC Avatar Generator: selfie upload + list-recent
+# ---------------------------------------------------------------------------
+#
+# Hybrid last-3 retention model (FR-014, Q2=C resolution): each tenant has
+# three numbered slots. Uploads land in the lowest-numbered free slot OR
+# evict the oldest occupied slot (mtime-based) when all three are taken.
+# No DB schema; each upload writes a sidecar `<uuid>.meta.json` for
+# downstream traceability.
+
+_SELFIE_VIDEO_MIMES: dict[str, str] = {
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/webm": ".webm",
+    "video/x-matroska": ".mkv",  # rare but accepted
+}
+
+_MAX_SELFIE_BYTES = 100 * 1024 * 1024  # 100 MB per spec 018 contracts/selfie-upload.md
+_SELFIE_MIN_DURATION_S = 5.0
+_SELFIE_MAX_DURATION_S = 60.0  # FR-001 — accept up to 60s, only first 15s used as ref
+_SELFIE_MIN_SHORT_SIDE_PX = 480
+_SELFIE_MIN_FPS = 24.0
+
+
+def _probe_selfie_metadata(path_str: str) -> dict:
+    """Run ffprobe for video duration, fps, dimensions."""
+    out = subprocess.run(
+        [
+            shutil.which("ffprobe") or "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries",
+            "stream=width,height,r_frame_rate,nb_frames:format=duration",
+            "-of", "json",
+            path_str,
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    import json as _json
+    data = _json.loads(out.stdout)
+    streams = data.get("streams") or []
+    if not streams:
+        return {"duration_s": 0.0, "width": 0, "height": 0, "fps": 0.0}
+    s = streams[0]
+    fmt = data.get("format", {})
+    duration = float(fmt.get("duration") or 0.0)
+    fps_raw = s.get("r_frame_rate") or "0/1"
+    try:
+        num, den = fps_raw.split("/")
+        fps = float(num) / float(den) if float(den) > 0 else 0.0
+    except (ValueError, ZeroDivisionError):
+        fps = 0.0
+    return {
+        "duration_s": duration,
+        "width": int(s.get("width") or 0),
+        "height": int(s.get("height") or 0),
+        "fps": fps,
+    }
+
+
+def _evict_oldest_avatar_if_full(tenant_id: str) -> int:
+    """Pick a slot to write into — the lowest-numbered free slot, OR the
+    oldest by mtime if all 3 are full (eviction).
+
+    Eviction deletes both the .mp4 and the .meta.json sidecar.
+    Returns the chosen slot number (1, 2, or 3).
+    """
+    parent = utils.tenant_avatar_dir(tenant_id, slot=None, create=True)
+    candidates = []
+    for n in (1, 2, 3):
+        slot_dir = os.path.join(parent, f"slot{n}")
+        if not os.path.isdir(slot_dir):
+            return n  # First free slot wins
+        files = [f for f in os.listdir(slot_dir) if f.endswith(".mp4")]
+        if not files:
+            return n  # Empty slot wins
+        # Pick oldest mtime as eviction candidate
+        oldest = min(files, key=lambda f: os.path.getmtime(os.path.join(slot_dir, f)))
+        candidates.append((os.path.getmtime(os.path.join(slot_dir, oldest)), n, slot_dir, oldest))
+
+    # All 3 occupied — evict the oldest by mtime
+    candidates.sort()
+    _, slot_n, slot_dir, oldest_file = candidates[0]
+    oldest_path = os.path.join(slot_dir, oldest_file)
+    meta_path = oldest_path[:-4] + ".meta.json"
+    for p in (oldest_path, meta_path):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    logger.info(f"selfie eviction: tenant={tenant_id} slot={slot_n} removed {oldest_file}")
+    return slot_n
+
+
+@router.post(
+    "/uploads/selfie",
+    status_code=200,
+    summary="Spec 018 — Upload a Mode-4 selfie speaker reference.",
+)
+def upload_selfie(
+    request: Request,
+    file: UploadFile = File(...),
+    auth: Any = Depends(jwt_required),
+):
+    """Upload a 5-60s selfie video for use as the speaker reference in
+    Mode 4 UGC Avatar renders. Validates format, duration, frame rate,
+    resolution, AND face-detection BEFORE persisting.
+
+    Hybrid last-3 retention: writes to one of three per-tenant slots,
+    evicting the oldest by mtime when full.
+
+    Returns the `Speaker Reference` shape per data-model.md Entity 1
+    (uuid, slot, path, duration_seconds, face_bbox, face_count_detected,
+    width, height, warnings).
+    """
+    tenant_id = (auth.get("tenant_id") if isinstance(auth, dict) else None) or "demo-tenant-001"
+    user_id = (auth.get("user_id") if isinstance(auth, dict) else None) or "demo-user-001"
+
+    mime = (file.content_type or "").lower()
+    ext = _SELFIE_VIDEO_MIMES.get(mime)
+    if not ext:
+        raise HTTPException(
+            status_code=400,
+            detail={"error_code": "format_unsupported", "message": f"Unsupported MIME: {mime}"},
+        )
+
+    # Read body with cap
+    body = file.file.read(_MAX_SELFIE_BYTES + 1)
+    if len(body) > _MAX_SELFIE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail={"error_code": "payload_too_large", "message": "Max 100 MB."},
+        )
+    if not body:
+        raise HTTPException(
+            status_code=400,
+            detail={"error_code": "format_unsupported", "message": "Empty upload."},
+        )
+
+    # Stage to a temp location for ffprobe + face detect BEFORE committing to slot.
+    import tempfile
+    tmp_dir = tempfile.mkdtemp(prefix="selfie_upload_")
+    try:
+        tmp_path = os.path.join(tmp_dir, "in" + ext)
+        with open(tmp_path, "wb") as f:
+            f.write(body)
+
+        meta = _probe_selfie_metadata(tmp_path)
+        if meta["duration_s"] < _SELFIE_MIN_DURATION_S or meta["duration_s"] > _SELFIE_MAX_DURATION_S:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_code": "duration_out_of_range",
+                    "message": f"Duration {meta['duration_s']:.1f}s outside [5, 60]s.",
+                    "details": {"duration_seconds": meta["duration_s"]},
+                },
+            )
+        if meta["fps"] < _SELFIE_MIN_FPS:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_code": "frame_rate_too_low",
+                    "message": f"Frame rate {meta['fps']:.1f} < {_SELFIE_MIN_FPS} fps.",
+                },
+            )
+        short_side = min(meta["width"], meta["height"])
+        if short_side < _SELFIE_MIN_SHORT_SIDE_PX:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error_code": "resolution_too_low",
+                    "message": f"Shortest side {short_side}px < {_SELFIE_MIN_SHORT_SIDE_PX}px.",
+                },
+            )
+
+        # Face detection — reject early per FR-002.
+        from app.services import lip_sync
+        try:
+            face_bbox = lip_sync.detect_face(tmp_path)
+        except ValueError:  # no_face_detected
+            raise HTTPException(
+                status_code=400,
+                detail={"error_code": "no_face_detected", "message": "No face detected in the uploaded video."},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"selfie face-detect crashed: {exc!r}")
+            raise HTTPException(
+                status_code=500,
+                detail={"error_code": "internal_validation_failed", "message": "Face detection error."},
+            )
+
+        # Pick slot + commit.
+        slot = _evict_oldest_avatar_if_full(tenant_id)
+        slot_dir = utils.tenant_avatar_dir(tenant_id, slot=slot, create=True)
+        uid = uuid.uuid4().hex[:12]
+        # Always write as .mp4 — remux non-mp4 sources.
+        target_path = os.path.join(slot_dir, f"{uid}.mp4")
+        if ext == ".mp4":
+            shutil.move(tmp_path, target_path)
+        else:
+            # Remux without re-encode (fast)
+            subprocess.run(
+                [
+                    shutil.which("ffmpeg") or "ffmpeg", "-loglevel", "error", "-y",
+                    "-i", tmp_path, "-c", "copy", target_path,
+                ],
+                check=True, capture_output=True, text=True,
+            )
+
+        warnings: list[str] = []
+        if face_bbox.get("face_count", 1) > 1:
+            warnings.append("multiple_faces_detected")
+        if face_bbox.get("confidence", 0.0) < 0.85:
+            warnings.append("face_partially_obscured")
+        if meta["fps"] < 30 and meta["fps"] >= _SELFIE_MIN_FPS:
+            warnings.append("low_frame_rate")
+
+        rel_path = os.path.relpath(target_path, utils.root_dir())
+        response: dict[str, Any] = {
+            "uuid": uid,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "slot": slot,
+            "path": rel_path,
+            "duration_seconds": round(meta["duration_s"], 2),
+            "width": meta["width"],
+            "height": meta["height"],
+            "face_count_detected": face_bbox.get("face_count", 1),
+            "face_bbox": {
+                "x": face_bbox["x"], "y": face_bbox["y"],
+                "w": face_bbox["w"], "h": face_bbox["h"],
+                "confidence": round(face_bbox["confidence"], 3),
+            },
+            "warnings": warnings,
+        }
+        # Sidecar metadata for the list-recent endpoint.
+        import json as _json
+        meta_path = target_path[:-4] + ".meta.json"
+        with open(meta_path, "w", encoding="utf-8") as f:
+            _json.dump(response, f, indent=2)
+
+        logger.info(
+            f"selfie_upload tenant={tenant_id} user={user_id} slot={slot} "
+            f"uuid={uid} duration={meta['duration_s']:.1f}s "
+            f"faces={face_bbox.get('face_count', 1)}"
+        )
+        return response
+    finally:
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except OSError:
+            pass
+
+
+@router.get(
+    "/uploads/selfie/recent",
+    summary="Spec 018 — List a tenant's last-3 selfies.",
+)
+def list_recent_selfies(
+    request: Request,
+    auth: Any = Depends(jwt_required),
+):
+    """Return up to 3 most-recent speaker references for the calling
+    tenant. Used by the L1 wizard's recent-selfies picker (FR-014).
+
+    Empty list when no slots are occupied. Slots are scanned by mtime
+    descending so the picker shows newest-first.
+    """
+    tenant_id = (auth.get("tenant_id") if isinstance(auth, dict) else None) or "demo-tenant-001"
+    parent = utils.tenant_avatar_dir(tenant_id, slot=None, create=True)
+    items: list[dict] = []
+    for n in (1, 2, 3):
+        slot_dir = os.path.join(parent, f"slot{n}")
+        if not os.path.isdir(slot_dir):
+            continue
+        for fname in os.listdir(slot_dir):
+            if not fname.endswith(".meta.json"):
+                continue
+            try:
+                with open(os.path.join(slot_dir, fname), "r", encoding="utf-8") as f:
+                    import json as _json
+                    items.append(_json.load(f))
+            except (OSError, ValueError):
+                continue
+    # Newest first by mtime of the .mp4
+    def _mtime(item):
+        p = os.path.join(utils.root_dir(), item.get("path", ""))
+        try:
+            return os.path.getmtime(p)
+        except OSError:
+            return 0.0
+    items.sort(key=_mtime, reverse=True)
+    return {"items": items[:3]}

@@ -95,6 +95,39 @@ def task_dir(sub_dir: str = ""):
     return d
 
 
+def tenant_avatar_dir(tenant_id: str, slot: int | None = None, create: bool = True):
+    """Spec 018 — return the storage path for a tenant's avatar slot(s).
+
+    Hybrid last-3 retention model (FR-014, Q2=C resolution): each tenant has
+    three numbered slots. New uploads land in a fresh slot; the 4th eviction
+    deletes the oldest by mtime.
+
+    Args:
+        tenant_id: tenant scope. Sanitised: only [a-zA-Z0-9_-] are kept.
+        slot: 1, 2, 3, or None. When None, returns the parent
+            `storage/uploads/<tenant>/avatars/` directory (used to enumerate
+            occupied slots for eviction + list-recent endpoint).
+        create: when True (default), `os.makedirs(...)` the path.
+
+    Returns:
+        Absolute path. Examples:
+        - ``tenant_avatar_dir("demo-tenant-001")``
+            → ``storage/uploads/demo-tenant-001/avatars/``
+        - ``tenant_avatar_dir("demo-tenant-001", slot=2)``
+            → ``storage/uploads/demo-tenant-001/avatars/slot2/``
+    """
+    import re
+    safe_tenant = re.sub(r"[^A-Za-z0-9_-]", "_", tenant_id or "anon")
+    d = os.path.join(storage_dir(), "uploads", safe_tenant, "avatars")
+    if slot is not None:
+        if slot not in (1, 2, 3):
+            raise ValueError(f"tenant_avatar_dir: slot must be 1, 2, or 3 — got {slot!r}")
+        d = os.path.join(d, f"slot{slot}")
+    if create and not os.path.exists(d):
+        os.makedirs(d)
+    return d
+
+
 def font_dir(sub_dir: str = ""):
     d = resource_dir("fonts")
     if sub_dir:

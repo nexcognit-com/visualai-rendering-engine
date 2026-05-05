@@ -82,7 +82,11 @@ class VideoParams(BaseModel):
     # Spec 016 widens the literal with "long" — Mode 3 Long-Form Video
     # (16:9 YouTube, 2-5 min). Layer 2 builds the script + B-roll list
     # upstream; Layer 3 assembles per the long_form mode registry entry.
-    mode: Literal["short", "faceless", "product_shoot", "long"] = "short"
+    # Spec 018 widens the literal with "ugc_avatar" — Mode 4 UGC Avatar
+    # Generator (MuseTalk lip-sync). Layer 2 generates the script via
+    # marketing_script.py + writes the speaker_reference_path field below;
+    # Layer 3 runs lip_sync inference per the ugc_avatar mode registry entry.
+    mode: Literal["short", "faceless", "product_shoot", "long", "ugc_avatar"] = "short"
 
     # Spec 017 — Visual-relevance pipeline. Layer 2.5 may pre-resolve each
     # narration segment to a specific clip URL (semantically aligned via
@@ -164,6 +168,12 @@ class VideoParams(BaseModel):
     # 1–3 entries required when visuals_mode == "user_uploaded".
     uploaded_product_paths: List[str] = Field(default_factory=list)
 
+    # Spec 018: filesystem path to the user's uploaded selfie video used
+    # as the speaker reference for Mode 4 (UGC Avatar). Required when
+    # mode == "ugc_avatar". Path MUST resolve under storage/uploads/.
+    # Entity definition + retention model in spec 018 data-model.md.
+    speaker_reference_path: Optional[str] = None
+
     @model_validator(mode="after")
     def _validate_visuals(self) -> "VideoParams":
         # Both user_uploaded and hybrid modes require uploads + path checks.
@@ -178,6 +188,18 @@ class VideoParams(BaseModel):
             _require_under_uploads(p)
         if self.uploaded_model_path:
             _require_under_uploads(self.uploaded_model_path)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_ugc_avatar(self) -> "VideoParams":
+        # Spec 018 — Mode 4 needs a speaker reference. Other modes ignore the
+        # field entirely (it stays None). When supplied, the path must resolve
+        # under storage/uploads/ for the same security reasons spec 006 enforces.
+        if self.mode != "ugc_avatar":
+            return self
+        if not self.speaker_reference_path:
+            raise ValueError("speaker_reference_required")
+        _require_under_uploads(self.speaker_reference_path)
         return self
 
     @model_validator(mode="after")

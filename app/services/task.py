@@ -290,23 +290,40 @@ def generate_final_videos(
     )
     video_transition_mode = params.video_transition_mode
 
+    # Spec 018 — Mode 4 (UGC Avatar) bypasses combine_videos entirely.
+    # lipsync.mp4 is already the full assembly matching audio length;
+    # passing it to combine_videos would trim it to max_clip_duration
+    # (typically 3-5s) and ruin the talking-head output.
+    is_ugc_avatar = getattr(params, "mode", None) == "ugc_avatar"
+
     _progress = 50
     for i in range(params.video_count):
         index = i + 1
         combined_video_path = path.join(
             utils.task_dir(task_id), f"combined-{index}.mp4"
         )
-        logger.info(f"\n\n## combining video: {index} => {combined_video_path}")
-        video.combine_videos(
-            combined_video_path=combined_video_path,
-            video_paths=downloaded_videos,
-            audio_file=audio_file,
-            video_aspect=params.video_aspect,
-            video_concat_mode=video_concat_mode,
-            video_transition_mode=video_transition_mode,
-            max_clip_duration=params.video_clip_duration,
-            threads=params.n_threads,
-        )
+        if is_ugc_avatar:
+            # downloaded_videos[0] is the lipsync.mp4 from the Mode-4
+            # branch in start(). Symlink/copy to combined_video_path so
+            # downstream video.generate_video has the canonical filename.
+            import shutil as _shutil
+            _shutil.copy2(downloaded_videos[0], combined_video_path)
+            logger.info(
+                f"\n\n## Mode 4: lipsync.mp4 → combined-{index}.mp4 "
+                "(skipped combine_videos — lip-sync output IS the assembly)"
+            )
+        else:
+            logger.info(f"\n\n## combining video: {index} => {combined_video_path}")
+            video.combine_videos(
+                combined_video_path=combined_video_path,
+                video_paths=downloaded_videos,
+                audio_file=audio_file,
+                video_aspect=params.video_aspect,
+                video_concat_mode=video_concat_mode,
+                video_transition_mode=video_transition_mode,
+                max_clip_duration=params.video_clip_duration,
+                threads=params.n_threads,
+            )
 
         _progress += 50 / params.video_count / 2
         sm.state.update_task(task_id, progress=_progress)
@@ -414,13 +431,89 @@ def _start_inner(task_id, params: VideoParams, stop_at: str = "video"):
 
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=40)
 
-    # 5. Get video materials
-    downloaded_videos = get_video_materials(
-        task_id, params, video_terms, audio_duration
-    )
-    if not downloaded_videos:
-        sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
-        return
+    # Spec 018 Mode 4 (UGC Avatar) — skip stock fetch entirely. The
+    # speaker reference IS the visual source. Run lip-sync inference over
+    # (speaker_reference, audio) to produce a single lipsync.mp4 that
+    # the final assembly step consumes in place of stock clips.
+    if getattr(params, "mode", None) == "ugc_avatar":
+        from app.services import lip_sync
+
+        ref_path = getattr(params, "speaker_reference_path", None)
+        if not ref_path:
+            sm.state.update_task(
+                task_id, state=const.TASK_STATE_FAILED,
+                error="speaker_reference_required",
+            )
+            logger.error("Mode 4 dispatch: missing speaker_reference_path")
+            return
+        if not path.isfile(ref_path):
+            sm.state.update_task(
+                task_id, state=const.TASK_STATE_FAILED,
+                error="speaker_reference_not_found",
+            )
+            logger.error(f"Mode 4 dispatch: ref not on disk: {ref_path}")
+            return
+
+        try:
+            face_bbox = lip_sync.detect_face(ref_path)
+        except ValueError as exc:  # no_face_detected
+            sm.state.update_task(
+                task_id, state=const.TASK_STATE_FAILED, error=str(exc),
+            )
+            logger.error(f"Mode 4 face-detect failed: {exc}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            sm.state.update_task(
+                task_id, state=const.TASK_STATE_FAILED, error="face_detect_failed",
+            )
+            logger.error(f"Mode 4 face-detect crashed: {exc!r}")
+            return
+
+        # Extend the reference to match audio length when audio > ref duration
+        # (FR-015 ping-pong loop). When audio ≤ ref, just trim the ref.
+        from pathlib import Path as _Path
+        task_root = _Path(utils.task_dir(task_id))
+        extended_ref_path = task_root / "extended_reference.mp4"
+        try:
+            lip_sync.extend_reference_to_duration(
+                ref_path, audio_duration, output_path=extended_ref_path,
+            )
+        except Exception as exc:  # noqa: BLE001
+            sm.state.update_task(
+                task_id, state=const.TASK_STATE_FAILED, error="loop_extension_failed",
+            )
+            logger.error(f"Mode 4 loop-extend crashed: {exc!r}")
+            return
+
+        # Run lip-sync inference (engine = LIP_SYNC_ENGINE env, defaults to mock).
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=50)
+        lipsync_out = task_root / "lipsync.mp4"
+        try:
+            lip_sync.run(
+                extended_ref_path, audio_file, lipsync_out, face_bbox=face_bbox,
+            )
+        except Exception as exc:  # noqa: BLE001
+            sm.state.update_task(
+                task_id, state=const.TASK_STATE_FAILED,
+                error="lip_sync_engine_failed",
+            )
+            logger.error(f"Mode 4 lip-sync crashed: {exc!r}")
+            return
+
+        # Mode 4 hands a single combined video to the final-assembly step.
+        # video.combine_videos would trim + concat stock clips; for Mode 4
+        # the lipsync.mp4 is already the combined video matching audio
+        # length exactly. We bypass combine_videos and feed lipsync.mp4
+        # directly into video.generate_video (subtitle burn-in + final encode).
+        downloaded_videos = [str(lipsync_out)]
+    else:
+        # 5. Get video materials (Modes 2/3/5 — stock fetch path)
+        downloaded_videos = get_video_materials(
+            task_id, params, video_terms, audio_duration
+        )
+        if not downloaded_videos:
+            sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
+            return
 
     if stop_at == "materials":
         sm.state.update_task(
