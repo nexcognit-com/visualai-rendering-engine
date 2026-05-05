@@ -33,6 +33,16 @@ dependencies = [
     "pydub==0.25.1",
     "PyJWT>=2.8",
     "ddgs==9.14.1",
+    # Spec 018 — Mode 4 UGC Avatar Generator (MuseTalk lip-sync).
+    # MediaPipe = face detection at upload time (FR-002) + face crop for
+    # lip-sync inference (T011 — F8 9:16 face-centered crop logic).
+    "mediapipe>=0.10",
+    # MuseTalk itself is NOT a pip-installable package — it's a clone-and-use
+    # repo with PyTorch + diffusers + tensorflow pins that conflict with our
+    # core deps. Vendored under `vendor/musetalk/` via
+    # scripts/install_musetalk.sh (T005). The lip_sync.py wrapper imports
+    # from there at runtime when LIP_SYNC_ENGINE=musetalk; LIP_SYNC_ENGINE=
+    # mock skips MuseTalk entirely (dev/CI default on hosts without GPU/MPS).
 ]
 
 [tool.hatch.build.targets.wheel]

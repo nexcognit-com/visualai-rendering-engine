@@ -1,6 +1,20 @@
 <!--
 Sync Impact Report
 ==================
+Version: 1.2.0 (MINOR — 2026-05-06)
+  - Spec 018 / Step 4 (UGC Avatar Generator) lands MuseTalk lip-sync as the
+    fourth concrete mode-registry entry. Mode 4 transitions from "reserved"
+    to "actively implemented" — `app/services/modes/ugc_avatar.py`.
+  - New module `app/services/lip_sync.py` introduced as the lip-sync inference
+    wrapper. Documented in Principle II's Surgical Fork narrative as a
+    justified addition outside the named six fork-surfaces (rationale: lip-
+    sync is a distinct concern from video assembly, equivalent in spirit to
+    the existing `app/services/voice.py` TTS wrapper; spec 018 plan.md
+    Complexity Tracking entry).
+  - Mode 3 remains reserved for Step 4's long-form work (spec 016 ships
+    Mode 3 separately under its own MINOR bump).
+  - No principle redefined or removed. Templates: no updates required.
+
 Version: 1.1.0 (MINOR — 2026-05-03)
   - Spec 015 / Step 3 lands the `app/services/modes/` registry as a real Python
     package; widened Principle II's documented fork-surface set to six items
@@ -198,4 +212,4 @@ Runtime guidance lives in `README.md`, `CLAUDE.md`, and the VisualAI
 Master Spec. Those documents MUST be updated in the same PR when a
 principle changes their stated behavior.
 
-**Version**: 1.1.0 | **Ratified**: 2026-04-19 | **Last Amended**: 2026-05-03
+**Version**: 1.2.0 | **Ratified**: 2026-04-19 | **Last Amended**: 2026-05-06

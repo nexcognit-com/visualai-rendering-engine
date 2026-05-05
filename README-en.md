@@ -140,6 +140,22 @@ git clone https://github.com/harry0703/MoneyPrinterTurbo.git
 - Follow the instructions in the `config.toml` file to configure `pexels_api_keys` and `llm_provider`, and according to
   the llm_provider's service provider, set up the corresponding API Key
 
+#### ③ (Optional) Mode 4 — UGC Avatar Generator (MuseTalk lip-sync)
+
+Mode 4 needs a vendored MuseTalk install + ~2 GB model weights. Skip this section
+if you only run Modes 2/3/5 OR if you're on a host without GPU/MPS (the dev
+default `LIP_SYNC_ENGINE=mock` bypasses MuseTalk entirely).
+
+```shell
+# Activate the L3 venv first, then:
+./scripts/install_musetalk.sh
+```
+
+The script clones `TMElyralab/MuseTalk` at a pinned SHA into `vendor/musetalk/`,
+installs the curated lip-sync runtime deps into the venv, and downloads the
+weights into `$MUSETALK_MODEL_DIR` (default `~/.cache/musetalk`). Once installed,
+flip `LIP_SYNC_ENGINE=musetalk` in `.env` to enable real inference.
+
 ### Docker Deployment 🐳
 
 #### ① Launch the Docker Container
