@@ -378,9 +378,12 @@ def _start_inner(task_id, params: VideoParams, stop_at: str = "video"):
         )
         return {"script": video_script}
 
-    # 2. Generate terms
+    # 2. Generate terms — Mode 4 (UGC Avatar) skips stock-term generation
+    # entirely because the speaker's face is the visual; there's nothing to
+    # search Pexels/Pixabay for. Mode 4's mode-registry generate_terms()
+    # returns [] by design.
     video_terms = ""
-    if params.video_source != "local":
+    if params.video_source != "local" and getattr(params, "mode", None) != "ugc_avatar":
         video_terms = generate_terms(task_id, params, video_script)
         if not video_terms:
             sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
