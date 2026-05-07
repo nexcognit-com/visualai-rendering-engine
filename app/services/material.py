@@ -808,16 +808,48 @@ def _supplement_with_shutterstock_images(
     return out_paths
 
 
+def _write_black_frame_clip(out_path: str, *, duration_seconds: float = 5.0) -> None:
+    """Write a black-frame MP4 placeholder for a missing/failed clip.
+
+    Used as the per-segment fallback in :func:`_download_from_pre_signed_urls`
+    when a pre-signed URL has expired or otherwise can't be fetched. Keeps
+    audio + subtitle alignment intact so the render salvages instead of
+    dying. Black frame at 1280x720 @ 30fps (cheap to encode, fits any
+    downstream aspect ratio).
+    """
+    import shutil as _shutil
+    import subprocess as _subprocess
+    ffmpeg = _shutil.which("ffmpeg") or "ffmpeg"
+    cmd = [
+        ffmpeg, "-loglevel", "error", "-y",
+        "-f", "lavfi",
+        "-i", f"color=c=black:s=1280x720:r=30:d={duration_seconds:.2f}",
+        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+        "-an",
+        out_path,
+    ]
+    _subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
 def _download_from_pre_signed_urls(task_id: str, urls: List[str]) -> List[str]:
     """Spec 015 (FR-022): fetch each pre-signed URL into the task's clips dir.
 
     Plain HTTP GET — Layer 3 does NOT verify the HMAC signature; that's
     Layer 2's responsibility at the ``/_signed/`` mount. 30s per-URL timeout,
     one retry on 5xx with 2s backoff.
+
+    Resilience to expired URLs (added 2026-05-08 after a real long-render
+    bug killed a 5-min Mode 3 render): when a single URL returns 403/410
+    or otherwise can't be fetched (e.g. signature expired during a long-
+    paused render), the segment falls back to a black-frame placeholder of
+    the same target duration instead of killing the whole render. This
+    preserves audio + subtitle alignment downstream and lets the creator
+    salvage a 95%-good render even if 1-2 segments couldn't be fetched.
     """
     out_dir = path.join(utils.task_dir(task_id), "clips")
     os.makedirs(out_dir, exist_ok=True)
     out_paths: List[str] = []
+    failed_indices: List[int] = []
     for i, url in enumerate(urls, start=1):
         ext = ".mp4"
         if "." in url.rsplit("/", 1)[-1].split("?", 1)[0]:
@@ -827,6 +859,11 @@ def _download_from_pre_signed_urls(task_id: str, urls: List[str]) -> List[str]:
         for attempt in range(2):
             try:
                 with requests.get(url, stream=True, timeout=30) as r:
+                    # 403/410 typically = expired pre-signed URL; no point
+                    # retrying because the signature itself is dead.
+                    if r.status_code in (403, 410):
+                        last_exc = RuntimeError(f"url_expired_or_forbidden status={r.status_code}")
+                        break
                     if r.status_code >= 500 and attempt == 0:
                         import time as _t
                         _t.sleep(2)
@@ -845,9 +882,35 @@ def _download_from_pre_signed_urls(task_id: str, urls: List[str]) -> List[str]:
                     _t.sleep(2)
                     continue
         if last_exc is not None:
-            logger.error(f"material.fetch_failed url={url!r}: {last_exc}")
-            raise RuntimeError(f"material.fetch_failed: {url}") from last_exc
-    logger.success(f"downloaded {len(out_paths)} clips from pre-signed URLs")
+            # Per-segment fallback: black-frame placeholder of target duration.
+            # Audio + subtitle alignment downstream is preserved; the creator
+            # gets a salvage-able render with 1-2 black segments instead of
+            # zero render.
+            logger.warning(
+                f"material.fetch_failed url={url[:80]!r}: {last_exc}; "
+                f"writing black-frame placeholder for clip-{i}"
+            )
+            try:
+                _write_black_frame_clip(out_path)
+                out_paths.append(out_path)
+                failed_indices.append(i)
+            except Exception as fallback_exc:  # noqa: BLE001
+                # If even the black-frame fallback fails, we DO give up on
+                # this render — something is fundamentally wrong with the
+                # task storage (disk full, permissions, ffmpeg missing).
+                logger.error(
+                    f"material.placeholder_failed for clip-{i}: {fallback_exc}"
+                )
+                raise RuntimeError(
+                    f"material.fetch_failed: {url} (placeholder also failed: {fallback_exc})"
+                ) from last_exc
+    if failed_indices:
+        logger.warning(
+            f"downloaded {len(out_paths)} clips; {len(failed_indices)} fell back to "
+            f"black placeholders (indices={failed_indices})"
+        )
+    else:
+        logger.success(f"downloaded {len(out_paths)} clips from pre-signed URLs")
     _write_asset_audit(task_id, {
         "visuals_mode": "auto",
         "auto_pexels_used": False,

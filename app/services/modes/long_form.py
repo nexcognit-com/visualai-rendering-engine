@@ -28,14 +28,20 @@ default_aspect_ratio: VideoAspect = VideoAspect.landscape
 # Public configuration consumed by Layer 2 + the controller. Keep these in
 # sync with `specs/016-long-form-video/contracts/layer3-render-contract.md`.
 target_resolution: Final[tuple[int, int]] = (1920, 1080)
-duration_choices_seconds: Final[tuple[int, ...]] = (120, 180, 240, 300)
+# Duration choices extended 2026-05-08 to cover YouTube long-form (8 + 10 min).
+# Trade-off: 10-min renders take ~50-70 min wall-clock on M-series silicon
+# (visual_relevance + ffmpeg stitch + Edge TTS scale linearly with duration).
+# Twelve Labs cost stays under the $1 budget at 10 min (~$0.50-0.65 per render).
+duration_choices_seconds: Final[tuple[int, ...]] = (120, 180, 240, 300, 480, 600)
 default_duration_seconds: Final[int] = 180
 word_budget_per_minute: Final[int] = 150
 subtitle_band_y_pct: Final[float] = 0.80
 subtitle_text_color: Final[str] = "#FFFFFF"
 subtitle_band_color: Final[str] = "#000000"
 subtitle_band_opacity: Final[float] = 0.60
-segment_count_range: Final[tuple[int, int]] = (8, 25)
+# Segment count range widened to support 10-min videos (~30-40 segments at
+# the 12-15s/shot pacing the long_form_script prompt targets).
+segment_count_range: Final[tuple[int, int]] = (8, 40)
 music_volume_db: Final[int] = -18
 script_template: Final[str] = "HOOK_BODY_SUMMARY"
 
