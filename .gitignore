@@ -40,3 +40,6 @@ debug_*.py
 # must remain trackable.
 /test_*.py
 streamlit.log
+
+# Vendored upstream engines (cloned locally, not tracked here)
+/vendor/
