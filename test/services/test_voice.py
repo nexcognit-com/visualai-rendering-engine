@@ -9,6 +9,7 @@ from unittest.mock import patch
 # add project root to python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from app.config import config
 from app.utils import utils
 from app.services import voice as vs
 from app.services import task as task_service
@@ -43,6 +44,8 @@ class TestVoiceService(unittest.TestCase):
         self.loop.close()
     
     def test_siliconflow(self):
+        if not config.siliconflow.get("api_key", ""):
+            self.skipTest("SiliconFlow API key not configured (config.siliconflow.api_key)")
         voice_name = "siliconflow:FunAudioLLM/CosyVoice2-0.5B:alex-Male"
         voice_name = vs.parse_voice_name(voice_name)
         
@@ -87,6 +90,8 @@ class TestVoiceService(unittest.TestCase):
         print(f"voice: {voice_name}, audio duration: {audio_duration}s")
 
     def test_azure_tts_v2(self):
+        if not config.azure.get("speech_key", "") or not config.azure.get("speech_region", ""):
+            self.skipTest("Azure speech_key/speech_region not configured (config.azure)")
         voice_name = "zh-CN-XiaoxiaoMultilingualNeural-V2-Female"
         voice_name = vs.parse_voice_name(voice_name)
         print(voice_name)
