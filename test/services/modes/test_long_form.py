@@ -17,8 +17,14 @@ def test_lf2_target_resolution_is_1080p() -> None:
     assert long_form.target_resolution == (1920, 1080)
 
 
-def test_lf3_duration_choices_are_2_to_5_minutes() -> None:
-    assert long_form.duration_choices_seconds == (120, 180, 240, 300)
+def test_duration_choices_includes_480_and_600() -> None:
+    """Spec 019 FR-001: Mode 3 cap raised 5min → 10min.
+
+    Asserts the full extended tuple (was `(120, 180, 240, 300)` pre-019).
+    """
+    assert long_form.duration_choices_seconds == (120, 180, 240, 300, 480, 600)
+    assert 480 in long_form.duration_choices_seconds
+    assert 600 in long_form.duration_choices_seconds
 
 
 def test_lf4_default_duration_is_3_minutes() -> None:
@@ -30,9 +36,15 @@ def test_lf5_subtitle_band_in_lower_third() -> None:
     assert 0.75 <= long_form.subtitle_band_y_pct <= 0.90
 
 
-def test_lf6_segment_count_range_8_to_25() -> None:
+def test_segment_count_range_upper_bound_is_40() -> None:
+    """Spec 019 FR-002: segment_count_range upper bound raised 25 → 40.
+
+    10-min videos at the 12-15s/shot pacing land at 30-40 segments;
+    the old 25 cap throttled visual variety.
+    """
     lo, hi = long_form.segment_count_range
-    assert lo == 8 and hi == 25
+    assert lo == 8
+    assert hi == 40
 
 
 def test_lf7_registry_includes_long_mode() -> None:

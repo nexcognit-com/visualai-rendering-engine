@@ -93,8 +93,17 @@ def test_mat5_url_returns_5xx_then_200_retries(task_dir: Path) -> None:
     assert len(out) == 1
 
 
-def test_mat7_url_returns_5xx_twice_raises(task_dir: Path) -> None:
-    """MAT-7: 5xx twice → fetch_failed."""
+def test_mat7_url_returns_5xx_twice_falls_back_to_placeholder(task_dir: Path) -> None:
+    """MAT-7: 5xx twice → render salvages with a black-frame placeholder.
+
+    Updated 2026-05-09 for spec 019 (FR-004): ``_download_from_pre_signed_urls``
+    no longer raises ``RuntimeError("fetch_failed")`` when the retry budget is
+    exhausted. Instead, it writes a black-frame MP4 placeholder for the failed
+    segment so the render salvages with audio + subtitle alignment intact.
+    The terminal-failure path (FR-006) is now: placeholder write itself fails
+    (e.g. ffmpeg missing). That case is covered by
+    ``test_material_url_expiry.py::test_placeholder_failure_is_terminal``.
+    """
     _write_sidecar(task_dir, {
         "tenant_id": "demo-tenant-001",
         "mode": "short",
@@ -106,9 +115,14 @@ def test_mat7_url_returns_5xx_twice_raises(task_dir: Path) -> None:
     with patch(
         "app.services.material.requests.get",
         side_effect=[_mock_response(status_code=503), _mock_response(status_code=502)],
-    ):
-        with pytest.raises(RuntimeError, match="fetch_failed"):
-            material.download_videos(task_id="tsk_test_001", search_terms=["x"])
+    ), patch(
+        "app.services.material._write_black_frame_clip"
+    ) as mock_placeholder:
+        out = material.download_videos(task_id="tsk_test_001", search_terms=["x"])
+
+    # FR-004: placeholder substituted; render returns the salvaged clip list.
+    assert mock_placeholder.call_count == 1
+    assert len(out) == 1, "Failed segment must be replaced by a placeholder, not dropped"
 
 
 def test_mat10_order_preservation(task_dir: Path) -> None:
