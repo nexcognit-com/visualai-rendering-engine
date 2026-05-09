@@ -537,12 +537,15 @@ def upload_selfie(
     tenant_id = (auth.get("tenant_id") if isinstance(auth, dict) else None) or "demo-tenant-001"
     user_id = (auth.get("user_id") if isinstance(auth, dict) else None) or "demo-user-001"
 
-    mime = (file.content_type or "").lower()
+    raw_mime = (file.content_type or "").lower()
+    # Browsers' MediaRecorder emits Content-Type with a codecs param
+    # (e.g. "video/webm;codecs=vp8"). Strip parameters before lookup.
+    mime = raw_mime.split(";", 1)[0].strip()
     ext = _SELFIE_VIDEO_MIMES.get(mime)
     if not ext:
         raise HTTPException(
             status_code=400,
-            detail={"error_code": "format_unsupported", "message": f"Unsupported MIME: {mime}"},
+            detail={"error_code": "format_unsupported", "message": f"Unsupported MIME: {raw_mime}"},
         )
 
     # Read body with cap
@@ -619,11 +622,15 @@ def upload_selfie(
         if ext == ".mp4":
             shutil.move(tmp_path, target_path)
         else:
-            # Remux without re-encode (fast)
+            # WebM (VP8/VP9) and MKV cannot be stream-copied into an MP4
+            # container, so re-encode the video to h264. Audio is dropped
+            # since MuseTalk synthesises narration from the script.
             subprocess.run(
                 [
                     shutil.which("ffmpeg") or "ffmpeg", "-loglevel", "error", "-y",
-                    "-i", tmp_path, "-c", "copy", target_path,
+                    "-i", tmp_path,
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an",
+                    target_path,
                 ],
                 check=True, capture_output=True, text=True,
             )
