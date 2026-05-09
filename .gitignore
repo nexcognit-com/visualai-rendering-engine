@@ -35,3 +35,9 @@ debug_*.py
 # must remain trackable.
 /test_*.py
 streamlit.log
+
+# Non-deterministic test artifacts: tests in test/services/test_video.py
+# round-trip a still image through the still→video pipeline, producing
+# *.png.mp4 outputs whose binary differs every run (mp4 container
+# timestamps in headers). They should not be tracked.
+test/resources/*.png.mp4

@@ -37,6 +37,17 @@ dependencies = [
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
 
+[dependency-groups]
+# Test dependencies (PEP 735). Not part of the runtime install.
+# Sync into the venv with: `uv sync --group dev`.
+# Required by Constitution §Development Workflow — `pytest test/`
+# must be runnable locally before PRs are opened.
+dev = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=0.23",
+    "pytest-mock>=3.10",
+]
+
 [tool.uv]
 # 当前项目以应用运行形态为主，不作为可发布的 Python 包安装。
 package = false
